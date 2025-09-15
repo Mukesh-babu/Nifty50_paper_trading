@@ -18,8 +18,7 @@ import yfinance as yf
 try:
     from algo_trading_main import (
         TradingConfig, DatabaseManager, TechnicalIndicators,
-        OptionsCalculator, Position,
-        MeanReversionStrategy, MomentumBreakoutStrategy, VolatilityRegimeStrategy,
+        OptionsCalculator, Position, STRATEGY_REGISTRY,
         export_trades_to_csv, logger
     )
 except Exception as e:
@@ -122,11 +121,8 @@ class TradingEngine:
         self.db = DatabaseManager()
         self.feed = MarketDataFeed()
         self.positions: Dict[str, Position] = {}
-        self.strategies = [
-            MeanReversionStrategy(),
-            MomentumBreakoutStrategy(),
-            VolatilityRegimeStrategy(),
-        ]
+        TradingConfig.reload()
+        self.strategies = self._instantiate_strategies()
 
         self.is_running = False
         self.current_capital = TradingConfig.TOTAL_CAPITAL
@@ -156,6 +152,7 @@ class TradingEngine:
             f"Risk/trade {TradingConfig.RISK_PER_TRADE * 100:.1f}%"
         )
 
+        self.refresh_config()
         self.is_running = True
         self.feed.start()
 
@@ -184,7 +181,42 @@ class TradingEngine:
             csv_file = export_trades_to_csv(self.db)
             if csv_file:
                 logger.info("📁 Trades exported: %s", csv_file)
-            logger.info("✅ Trading engine stopped")
+        logger.info("✅ Trading engine stopped")
+
+    def refresh_config(self):
+        """Reload config values and refresh strategy parameters at runtime."""
+        TradingConfig.reload()
+        self.strategies = self._instantiate_strategies()
+        for pos in self.positions.values():
+            pos.fixed_risk_rupees = TradingConfig.FIXED_RISK_RUPEES
+            pos.target_trigger_rupees = TradingConfig.TARGET_TRIGGER_RUPEES
+        if not self.is_running:
+            self.current_capital = TradingConfig.TOTAL_CAPITAL
+            self.peak_capital = self.current_capital
+        logger.info("🔄 Trading engine configuration refreshed")
+
+    def _instantiate_strategies(self) -> List:
+        strategies = []
+        for name in TradingConfig.ACTIVE_STRATEGIES:
+            strat_cls = STRATEGY_REGISTRY.get(name)
+            if not strat_cls:
+                logger.warning("Unknown strategy in config: %s", name)
+                continue
+            strat = strat_cls()
+            if hasattr(strat, "refresh_from_config"):
+                try:
+                    strat.refresh_from_config()
+                except Exception as exc:
+                    logger.debug("Strategy refresh failed (%s): %s", name, exc)
+            strategies.append(strat)
+
+        if not strategies:
+            # Fallback to ensure engine has at least one strategy active
+            default_name, default_cls = next(iter(STRATEGY_REGISTRY.items()))
+            logger.warning("No valid strategies active. Falling back to %s", default_name)
+            strategies.append(default_cls())
+
+        return strategies
 
     # ---------- Core loop ----------
     def _trading_loop(self):
@@ -477,6 +509,8 @@ class TradingEngine:
                 "last_update": self.feed.last_update.isoformat() if self.feed.last_update else None,
                 "positions": positions_data,
                 "strategy_stats": [s.get_statistics() for s in self.strategies],
+                "active_strategies": TradingConfig.ACTIVE_STRATEGIES,
+                "available_strategies": list(STRATEGY_REGISTRY.keys()),
             }
         except Exception as e:
             logger.error("get_status failed: %s", e)

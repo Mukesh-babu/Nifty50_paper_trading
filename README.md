@@ -11,6 +11,8 @@ Advanced algorithmic trading platform with paper trading capabilities for the In
 - ✅ Trade logging and CSV export
 - ✅ Performance analytics
 - ✅ Paper trading (no real money at risk)
+- ✅ Configurable parameters from dashboard
+- ✅ Built-in historical backtesting with best-strategy auto selection
 
 ## Quick Start
 
@@ -49,11 +51,11 @@ Open your browser and go to: http://localhost:5000
 
 ## Configuration
 
-Edit `config/config.json` to customize:
-- Capital amount
-- Risk parameters
-- Strategy selection
-- Market timing
+Edit `config/config.json` (or use the dashboard Configuration tab) to customize:
+- Capital amount (propagated to engine, dashboard, and backtester)
+- Risk parameters & per-trade limits
+- Active strategy roster and strategy-specific tuning
+- Market timing and trailing/target behaviour
 
 ## Files Structure
 
@@ -79,6 +81,13 @@ Edit `config/config.json` to customize:
 - **Stop Losses**: Dynamic based on volatility
 - **Daily Limits**: Maximum trades per day
 - **Cooldown Periods**: Prevents overtrading
+
+## Backtesting
+
+- Use the dashboard **Backtesting** tab to run historical simulations.
+- Supports intraday 1-minute data (up to 7 days via Yahoo Finance limits) and higher intervals.
+- Automatically applies the most profitable strategy from the run to the live engine configuration (optional toggle).
+- Detailed equity curves and trade breakdowns are displayed directly in the UI.
 
 ## Dashboard Features
 
