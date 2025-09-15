@@ -21,6 +21,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "trail_pct": 0.02,
         "entry_confidence_min": 40,
         "max_lots_cap": 10,
+        "max_premium_allocation_pct": 0.10,
         "fixed_risk_rupees": 500,
         "target_trigger_rupees": 500,
         "trail_after_trigger": True,

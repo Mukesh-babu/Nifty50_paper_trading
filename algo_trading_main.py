@@ -63,6 +63,7 @@ class TradingConfig:
 
     ENTRY_CONFIDENCE_MIN = DEFAULT_CONFIG["trading"]["entry_confidence_min"]
     MAX_LOTS_CAP = DEFAULT_CONFIG["trading"]["max_lots_cap"]
+    MAX_PREMIUM_ALLOCATION_PCT = DEFAULT_CONFIG["trading"].get("max_premium_allocation_pct", 0.10)
     FIXED_RISK_RUPEES = DEFAULT_CONFIG["trading"]["fixed_risk_rupees"]
     TARGET_TRIGGER_RUPEES = DEFAULT_CONFIG["trading"]["target_trigger_rupees"]
     TRAIL_AFTER_TRIGGER = DEFAULT_CONFIG["trading"]["trail_after_trigger"]
@@ -127,6 +128,9 @@ class TradingConfig:
             cls.TRAIL_PCT = float(trading.get("trail_pct", cls.TRAIL_PCT))
             cls.ENTRY_CONFIDENCE_MIN = int(trading.get("entry_confidence_min", cls.ENTRY_CONFIDENCE_MIN))
             cls.MAX_LOTS_CAP = int(trading.get("max_lots_cap", cls.MAX_LOTS_CAP))
+            cls.MAX_PREMIUM_ALLOCATION_PCT = float(
+                trading.get("max_premium_allocation_pct", cls.MAX_PREMIUM_ALLOCATION_PCT)
+            )
             cls.FIXED_RISK_RUPEES = float(trading.get("fixed_risk_rupees", cls.FIXED_RISK_RUPEES))
             cls.TARGET_TRIGGER_RUPEES = float(trading.get("target_trigger_rupees", cls.TARGET_TRIGGER_RUPEES))
             cls.TRAIL_AFTER_TRIGGER = bool(trading.get("trail_after_trigger", cls.TRAIL_AFTER_TRIGGER))
@@ -197,6 +201,7 @@ class TradingConfig:
                 "trail_pct": cls.TRAIL_PCT,
                 "entry_confidence_min": cls.ENTRY_CONFIDENCE_MIN,
                 "max_lots_cap": cls.MAX_LOTS_CAP,
+                "max_premium_allocation_pct": cls.MAX_PREMIUM_ALLOCATION_PCT,
                 "fixed_risk_rupees": cls.FIXED_RISK_RUPEES,
                 "target_trigger_rupees": cls.TARGET_TRIGGER_RUPEES,
                 "trail_after_trigger": cls.TRAIL_AFTER_TRIGGER,

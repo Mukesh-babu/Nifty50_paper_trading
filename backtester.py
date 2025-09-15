@@ -263,25 +263,41 @@ class Backtester:
                     max_risk = cash * TradingConfig.RISK_PER_TRADE
                     risk_per_lot = max(1.0, entry_price * TradingConfig.LOT_SIZE * TradingConfig.BASE_SL_PCT)
                     lots = max(1, min(int(max_risk / risk_per_lot), TradingConfig.MAX_LOTS_CAP))
-                    required_capital = entry_price * TradingConfig.LOT_SIZE * lots
-                    if required_capital <= cash * 0.10 and lots > 0:
-                        symbol = f"NIFTY{strike}{'CE' if is_call else 'PE'}"
-                        pid = f"{symbol}_{ts.strftime('%Y%m%d_%H%M%S')}"
-                        pos = Position(
-                            symbol=symbol,
-                            option_type=signal["option_type"],
-                            strike=strike,
-                            entry_price=entry_price,
-                            qty_lots=lots,
-                            entry_time=ts.to_pydatetime(),
-                            strategy=strategy_name,
-                            entry_spot=market_data["close"],
-                            expiry_date=expiry_iso,
+
+                    premium_cap_pct = getattr(TradingConfig, "MAX_PREMIUM_ALLOCATION_PCT", 0.10)
+                    lot_cost = entry_price * TradingConfig.LOT_SIZE
+                    if lot_cost <= 0:
+                        continue
+
+                    max_lots_capital = int((cash * premium_cap_pct) / lot_cost)
+                    if max_lots_capital <= 0:
+                        self.notes.append(
+                            f"Insufficient capital to buy minimum lot for {strategy_name} on {ts.date()} within premium cap."
                         )
-                        open_positions[pid] = pos
-                        cash -= required_capital
-                        daily_trades[day_key] += 1
-                        last_trade_time = ts
+                        continue
+
+                    lots = min(lots, max_lots_capital)
+                    if lots <= 0:
+                        continue
+
+                    required_capital = lot_cost * lots
+                    symbol = f"NIFTY{strike}{'CE' if is_call else 'PE'}"
+                    pid = f"{symbol}_{ts.strftime('%Y%m%d_%H%M%S')}"
+                    pos = Position(
+                        symbol=symbol,
+                        option_type=signal["option_type"],
+                        strike=strike,
+                        entry_price=entry_price,
+                        qty_lots=lots,
+                        entry_time=ts.to_pydatetime(),
+                        strategy=strategy_name,
+                        entry_spot=market_data["close"],
+                        expiry_date=expiry_iso,
+                    )
+                    open_positions[pid] = pos
+                    cash -= required_capital
+                    daily_trades[day_key] += 1
+                    last_trade_time = ts
 
             open_value = sum(
                 pos.current_price * TradingConfig.LOT_SIZE * pos.qty_lots for pos in open_positions.values()
