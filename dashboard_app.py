@@ -20,10 +20,15 @@ os.makedirs("templates", exist_ok=True)
 # --- Imports & logger fallback ---
 import logging
 logger = None
-logger = None
 try:
     from trading_engine import TradingEngine  # single import, used everywhere
-    from algo_trading_main import DatabaseManager, export_trades_to_csv, logger as ext_logger
+    from algo_trading_main import (
+        DatabaseManager,
+        TradingConfig,
+        export_trades_to_csv,
+        logger as ext_logger,
+        STRATEGY_REGISTRY,
+    )
     logger = ext_logger
 
 except ImportError as e:
@@ -34,7 +39,7 @@ except ImportError as e:
 
     # we still attempt to run with a best-effort DB manager
     try:
-        from algo_trading_main import DatabaseManager, export_trades_to_csv
+        from algo_trading_main import DatabaseManager, export_trades_to_csv, TradingConfig
     except Exception as e2:
         logger.error("Critical: Could not import DatabaseManager/export_trades_to_csv: %s", e2)
         sys.exit(1)
@@ -50,6 +55,7 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 trading_engine = None
 _engine_lock = threading.RLock()
 db_manager = DatabaseManager()
+AVAILABLE_STRATEGIES = list(STRATEGY_REGISTRY.keys()) if 'STRATEGY_REGISTRY' in globals() else []
 
 # ============= Helpers =============
 
@@ -84,13 +90,14 @@ def _get_status_from_db():
     """
     status = {
         'is_running': False,
-        'current_capital': 100000,
+        'current_capital': TradingConfig.TOTAL_CAPITAL,
         'total_pnl': 0,
         'total_trades': 0,
         'winning_trades': 0,
         'win_rate': 0.0,
         'open_positions': 0,
-        'current_price': 0
+        'current_price': 0,
+        'active_strategies': TradingConfig.ACTIVE_STRATEGIES,
     }
     try:
         trades_df = db_manager.get_recent_trades(limit=1000)
@@ -263,6 +270,8 @@ def get_status():
     if status is None:
         status = _get_status_from_db()
         status['error'] = 'Trading engine not connected to this process'
+    status.setdefault('active_strategies', TradingConfig.ACTIVE_STRATEGIES)
+    status['available_strategies'] = AVAILABLE_STRATEGIES
     return jsonify(status)
 
 @app.route('/api/trades')
@@ -348,6 +357,43 @@ def get_strategies():
         logger.error("Error getting strategy data: %s", e)
         return jsonify({'error': str(e)}), 500
 
+
+@app.route('/api/config', methods=['GET', 'POST'])
+def api_config():
+    """Expose and update trading configuration."""
+    if request.method == 'GET':
+        return jsonify({
+            'config': TradingConfig.to_dashboard(),
+            'available_strategies': AVAILABLE_STRATEGIES,
+        })
+
+    payload = request.get_json(force=True, silent=True) or {}
+    updates = {}
+    try:
+        if isinstance(payload.get('trading'), dict):
+            updates['trading'] = payload['trading']
+        if isinstance(payload.get('strategy_params'), dict):
+            updates['strategy_params'] = payload['strategy_params']
+        if isinstance(payload.get('backtest'), dict):
+            updates['backtest'] = payload['backtest']
+        active = payload.get('active_strategies')
+        if active is not None:
+            updates.setdefault('trading', {})['active_strategies'] = active
+
+        if not updates:
+            return jsonify({
+                'status': 'no_changes',
+                'config': TradingConfig.to_dashboard()
+            })
+
+        config = TradingConfig.update_config(updates)
+        if trading_engine and getattr(trading_engine, 'is_running', False):
+            trading_engine.refresh_config()
+        return jsonify({'status': 'success', 'config': config})
+    except Exception as e:
+        logger.error("Config update failed: %s", e)
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 @app.route('/api/export')
 def export_trades():
     """Export trades to CSV"""
@@ -361,6 +407,30 @@ def export_trades():
     except Exception as e:
         logger.error("Error exporting trades: %s", e)
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backtest', methods=['POST'])
+def run_backtest_api():
+    """Run historical backtest and optionally apply winning strategy."""
+    payload = request.get_json(force=True, silent=True) or {}
+    auto_apply = payload.get('auto_apply_best', True)
+    try:
+        from backtester import Backtester  # Local import to prevent circular on startup
+
+        tester = Backtester(
+            symbol=payload.get('symbol'),
+            interval=payload.get('interval'),
+            lookback_days=payload.get('lookback_days'),
+            strategies=payload.get('strategies'),
+            auto_apply_best=auto_apply,
+        )
+        result = tester.run()
+        if auto_apply and trading_engine and getattr(trading_engine, 'is_running', False):
+            trading_engine.refresh_config()
+        return jsonify({'status': 'success', 'result': result})
+    except Exception as e:
+        logger.error("Backtest failed: %s", e)
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/api/control/<action>')
 def control_system(action):
