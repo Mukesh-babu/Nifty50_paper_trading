@@ -6,6 +6,16 @@ from flask import Flask, render_template, jsonify, request, send_file
 from flask_socketio import SocketIO, emit
 import json
 import os
+
+from datetime import datetime
+import pandas as pd
+import plotly.graph_objs as go
+import plotly.utils
+import time
+import sys
+import threading
+=======
+from pathlib import Path
 from datetime import datetime
 import pandas as pd
 import plotly.graph_objs as go
@@ -14,8 +24,9 @@ import time
 import sys
 import threading
 
-# --- Templates dir ---
-os.makedirs("templates", exist_ok=True)
+
+# --- Paths ---
+BASE_DIR = Path(__file__).resolve().parent
 
 # --- Imports & logger fallback ---
 import logging
@@ -45,7 +56,7 @@ except ImportError as e:
         sys.exit(1)
 
 # --- Flask / SocketIO ---
-app = Flask(__name__)
+app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
 app.config['SECRET_KEY'] = 'algo_trading_secret_key_2024'
 
 # Force threading backend to avoid eventlet/gevent mismatches unless you explicitly install/configure them.
@@ -229,10 +240,10 @@ def create_hourly_performance_chart():
 @app.route('/')
 def dashboard():
     """Main dashboard page"""
-    template_path = os.path.join('templates', 'dashboard.html')
-    if not os.path.exists(template_path):
-        os.makedirs('templates', exist_ok=True)
-        with open(template_path, 'w', encoding='utf-8') as f:
+    template_path = BASE_DIR / "templates" / "dashboard.html"
+    if not template_path.exists():
+        template_path.parent.mkdir(parents=True, exist_ok=True)
+        with template_path.open('w', encoding='utf-8') as f:
             f.write(get_dashboard_html())
     try:
         return render_template('dashboard.html')
