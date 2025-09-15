@@ -352,10 +352,23 @@ class TradingEngine:
         risk_per_lot = max(1.0, entry_price * TradingConfig.LOT_SIZE * TradingConfig.BASE_SL_PCT)
         lots = max(1, min(int(max_risk / risk_per_lot), 5))
 
-        required_capital = entry_price * TradingConfig.LOT_SIZE * lots
-        if required_capital > self.current_capital * 0.10:  # at most 10% in premium
-            logger.warning("🚫 Entry rejected (capital): %s", strat_name)
+        premium_cap_pct = getattr(TradingConfig, "MAX_PREMIUM_ALLOCATION_PCT", 0.10)
+        lot_cost = entry_price * TradingConfig.LOT_SIZE
+        if lot_cost <= 0:
+            logger.warning("🚫 Entry rejected (invalid lot cost): %s", strat_name)
             return
+
+        max_lots_capital = int((self.current_capital * premium_cap_pct) / lot_cost)
+        if max_lots_capital <= 0:
+            logger.warning("🚫 Entry rejected (capital limit): %s", strat_name)
+            return
+
+        lots = min(lots, max_lots_capital)
+        if lots <= 0:
+            logger.warning("🚫 Entry rejected (zero lots after cap): %s", strat_name)
+            return
+
+        required_capital = lot_cost * lots
 
         symbol = f"NIFTY{strike}{'CE' if is_call else 'PE'}"
         pid = f"{symbol}_{entry_time.strftime('%Y%m%d_%H%M%S')}"
