@@ -1,0 +1,39 @@
+{
+    "trading": {
+        "total_capital": 10000,
+        "risk_per_trade": 0.5,
+        "lot_size": 75,
+        "fees_per_order": 64,
+        "max_trades_per_day": 5,
+        "max_open_positions": 2,
+        "cooldown_minutes": 30
+    },
+    "market": {
+        "symbol": "^NSEI",
+        "market_open": "09:15",
+        "market_close": "15:30",
+        "eod_exit": "15:15"
+    },
+    "strategies": {
+        "enabled": [
+            "Mean Reversion",
+            "Momentum Breakout",
+            "Volatility Regime"
+        ],
+        "risk_levels": {
+            "conservative": ["Mean Reversion", "Pair Trading", "Arbitrage"],
+            "moderate": ["Volatility Regime", "Options Flow"],
+            "aggressive": ["Momentum Breakout", "News Based", "Scalping", "Machine Learning"]
+        }
+    },
+    "dashboard": {
+        "host": "0.0.0.0",
+        "port": 5000,
+        "debug": false,
+        "auto_export": true
+    },
+    "database": {
+        "type": "sqlite",
+        "filename": "algo_trading.db"
+    }
+}

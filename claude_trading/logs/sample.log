@@ -1,0 +1,7 @@
+# AI Algo Trading Platform - Sample Log
+# This file will contain trading logs when the system runs
+
+[INFO] System initialized
+[INFO] Market data feed started
+[INFO] Trading strategies loaded
+[INFO] Dashboard ready at http://localhost:5000
