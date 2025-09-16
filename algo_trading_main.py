@@ -46,10 +46,11 @@ for handler in logging.root.handlers:
 class TradingConfig:
     """Centralized configuration management"""
     # Capital Management
-    TOTAL_CAPITAL = 10000          # ₹1 Lakh for paper trading
+    TOTAL_CAPITAL = 10000          # ₹10K starting capital for paper trading
     RISK_PER_TRADE = 0.02           # 2% risk per trade (still used for sanity checks)
     LOT_SIZE = 50                   # NIFTY lot size = 50
     FEES_PER_ORDER = 64             # Estimated fees per order
+    PREMIUM_CAPITAL_FRACTION = 0.6  # Allow up to 60% of available cash per position
 
     # Risk Management (percent-based helpers; still used for sizing heuristics)
     BASE_SL_PCT = 0.03              # 3% initial stop loss assumption (for sizing heuristics)
@@ -69,6 +70,7 @@ class TradingConfig:
     MAX_TRADES_PER_DAY = 5
     MAX_OPEN_POSITIONS = 3
     COOLDOWN_MINUTES = 30
+    DATA_STALENESS_SECONDS = 120    # Require market data updates within the last 2 minutes
 
     # Market Hours (IST)
     MARKET_OPEN = "09:15"
