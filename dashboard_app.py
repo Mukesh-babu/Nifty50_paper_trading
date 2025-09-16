@@ -10,12 +10,21 @@ import os
 from pathlib import Path
 from datetime import datetime
 
+
+from flask import Flask, render_template, jsonify, request, send_file
+from flask_socketio import SocketIO, emit
+import json
+import os
+from pathlib import Path
+from datetime import datetime
+
 from flask import Flask, render_template, jsonify, request, send_file
 from flask_socketio import SocketIO, emit
 import json
 import os
 from datetime import datetime
 from pathlib import Path
+
 
 import pandas as pd
 import plotly.graph_objs as go
@@ -32,11 +41,20 @@ BASE_DIR = Path(__file__).resolve().parent
 import logging
 logger = None
 
+
+# --- Paths ---
 BASE_DIR = Path(__file__).resolve().parent
 
 # --- Imports & logger fallback ---
 import logging
 logger = None
+
+BASE_DIR = Path(__file__).resolve().parent
+
+# --- Imports & logger fallback ---
+import logging
+logger = None
+
 try:
     from trading_engine import TradingEngine  # single import, used everywhere
     from algo_trading_main import (
@@ -110,6 +128,8 @@ except ImportError as e:
 
 # --- Flask / SocketIO ---
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
+# --- Flask / SocketIO ---
+app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
 
 # --- Flask / SocketIO ---
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
@@ -121,6 +141,7 @@ app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
 
 # --- Flask / SocketIO ---
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
+
 
 
 app.config['SECRET_KEY'] = 'algo_trading_secret_key_2024'
@@ -334,6 +355,12 @@ def dashboard():
         with template_path.open('w', encoding='utf-8') as f:
 
 
+    template_path = BASE_DIR / "templates" / "dashboard.html"
+    if not template_path.exists():
+        template_path.parent.mkdir(parents=True, exist_ok=True)
+        with template_path.open('w', encoding='utf-8') as f:
+
+
     template_path = BASE_DIR / 'templates' / 'dashboard.html'
     if not template_path.exists():
         template_path.parent.mkdir(parents=True, exist_ok=True)
@@ -348,6 +375,7 @@ def dashboard():
     if not template_path.exists():
         template_path.parent.mkdir(parents=True, exist_ok=True)
         with template_path.open('w', encoding='utf-8') as f:
+
 
             f.write(get_dashboard_html())
     try:
@@ -720,8 +748,37 @@ def ensure_background_task():
         ensure_background_task._started = True
         logger.info("Dashboard update background task started")
 
+def start_dashboard_updates() -> bool:
+    """Public helper to start Socket.IO background updates.
+
+    Flask launchers import this symbol (see ``main_launcher.py``) to ensure
+    the dashboard emits live status messages.  Older versions of this module
+    did not expose the helper which caused ``ImportError`` at runtime.  The
+    function is idempotent thanks to :func:`ensure_background_task` keeping an
+    internal flag, so calling it repeatedly is safe.
+    """
+
+    ensure_background_task()
+    return True
+
+# ============= Main =============
+
+if __name__ == '__main__':
+    start_dashboard_updates()
+    logger.info("🌐 Starting Trading Dashboard on http://localhost:5000")
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+=======
+def ensure_background_task():
+    """Start the SocketIO background task if not running."""
+    # Using an attribute to keep a single task
+    if not hasattr(ensure_background_task, "_started"):
+        socketio.start_background_task(target=dashboard_update_task)
+        ensure_background_task._started = True
+        logger.info("Dashboard update background task started")
+
 # ============= 
 if __name__ == '__main__':
     ensure_background_task()
     logger.info("🌐 Starting Trading Dashboard on http://localhost:5000")
     socketio.run(app, host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+
