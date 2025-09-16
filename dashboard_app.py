@@ -2,18 +2,35 @@
 # Web-based dashboard for monitoring algo trading system
 # Version: 1.1
 
+
+from flask import Flask, render_template, jsonify, request, send_file
+from flask_socketio import SocketIO, emit
+import json
+import os
+from pathlib import Path
+from datetime import datetime
+
 from flask import Flask, render_template, jsonify, request, send_file
 from flask_socketio import SocketIO, emit
 import json
 import os
 from datetime import datetime
 from pathlib import Path
+
 import pandas as pd
 import plotly.graph_objs as go
 import plotly.utils
 import time
 import sys
 import threading
+
+
+# --- Paths ---
+BASE_DIR = Path(__file__).resolve().parent
+
+# --- Imports & logger fallback ---
+import logging
+logger = None
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -33,7 +50,7 @@ try:
 
 except ImportError as e:
     print("Error: Please ensure algo_trading_main.py is available:", e)
-=======
+
 from flask import Flask, render_template, jsonify, request, send_file
 from flask_socketio import SocketIO, emit
 import json
@@ -46,7 +63,7 @@ import plotly.utils
 import time
 import sys
 import threading
-=======
+
 from pathlib import Path
 from datetime import datetime
 import pandas as pd
@@ -63,6 +80,7 @@ BASE_DIR = Path(__file__).resolve().parent
 # --- Imports & logger fallback ---
 import logging
 logger = None
+
 try:
     from trading_engine import TradingEngine  # single import, used everywhere
     from algo_trading_main import (
@@ -89,6 +107,10 @@ except ImportError as e:
         logger.error("Critical: Could not import DatabaseManager/export_trades_to_csv: %s", e2)
         sys.exit(1)
 
+
+# --- Flask / SocketIO ---
+app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
+
 # --- Flask / SocketIO ---
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
 
@@ -99,6 +121,7 @@ app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
 
 # --- Flask / SocketIO ---
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
+
 
 app.config['SECRET_KEY'] = 'algo_trading_secret_key_2024'
 
@@ -305,6 +328,12 @@ def create_hourly_performance_chart():
 def dashboard():
     """Main dashboard page"""
 
+    template_path = BASE_DIR / "templates" / "dashboard.html"
+    if not template_path.exists():
+        template_path.parent.mkdir(parents=True, exist_ok=True)
+        with template_path.open('w', encoding='utf-8') as f:
+
+
     template_path = BASE_DIR / 'templates' / 'dashboard.html'
     if not template_path.exists():
         template_path.parent.mkdir(parents=True, exist_ok=True)
@@ -319,6 +348,7 @@ def dashboard():
     if not template_path.exists():
         template_path.parent.mkdir(parents=True, exist_ok=True)
         with template_path.open('w', encoding='utf-8') as f:
+
             f.write(get_dashboard_html())
     try:
         return render_template('dashboard.html')
@@ -690,8 +720,7 @@ def ensure_background_task():
         ensure_background_task._started = True
         logger.info("Dashboard update background task started")
 
-# ============= Main =============
-
+# ============= 
 if __name__ == '__main__':
     ensure_background_task()
     logger.info("🌐 Starting Trading Dashboard on http://localhost:5000")

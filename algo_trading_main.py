@@ -41,6 +41,53 @@ for handler in logging.root.handlers:
     if isinstance(handler, logging.StreamHandler) and handler.stream == sys.stdout:
         handler.stream = sys.stdout
 
+
+# -------------------------------------------------
+# Config
+# -------------------------------------------------
+class TradingConfig:
+    """Centralized configuration management"""
+    # Capital Management
+    TOTAL_CAPITAL = 10000          # ₹10K starting capital for paper trading
+    RISK_PER_TRADE = 0.02           # 2% risk per trade (still used for sanity checks)
+    LOT_SIZE = 50                   # NIFTY lot size = 50
+    FEES_PER_ORDER = 64             # Estimated fees per order
+    PREMIUM_CAPITAL_FRACTION = 0.6  # Allow up to 60% of available cash per position
+
+    # Risk Management (percent-based helpers; still used for sizing heuristics)
+    BASE_SL_PCT = 0.03              # 3% initial stop loss assumption (for sizing heuristics)
+    BASE_TP_PCT = 0.06              # (not used by rupee exit, but kept for analytics)
+    PARTIAL_TP_PCT = 0.04           # (kept for analytics)
+    TRAIL_PCT = 0.02                # 2% trailing stop (applies to option price when trailing)
+
+    # New: Execution intensity & fixed-rupee risk model
+    ENTRY_CONFIDENCE_MIN = 40       # Lower threshold → more entries
+    MAX_LOTS_CAP = 10               # Allow up to 10 lots when risk allows
+
+    FIXED_RISK_RUPEES = 500         # Hard stop per trade in ₹
+    TARGET_TRIGGER_RUPEES = 500     # When reached, flip to trailing mode
+    TRAIL_AFTER_TRIGGER = True      # Enable trailing after trigger
+
+    # Trading Limits
+    MAX_TRADES_PER_DAY = 5
+    MAX_OPEN_POSITIONS = 3
+    COOLDOWN_MINUTES = 30
+    DATA_STALENESS_SECONDS = 120    # Require market data updates within the last 2 minutes
+
+    # Market Hours (IST)
+    MARKET_OPEN = "09:15"
+    MARKET_CLOSE = "15:30"
+    EOD_EXIT = "15:15"
+
+    # Technical Indicators (slightly looser to increase signals)
+    RSI_PERIOD = 14
+    RSI_OVERSOLD = 30               # was 25
+    RSI_OVERBOUGHT = 70             # was 75
+    BB_PERIOD = 20
+    BB_STD = 2.0
+    VOL_LOOKBACK = 20
+    VOL_THRESHOLD = 1.2
+
 from config.manager import DEFAULT_CONFIG, ensure_config, load_config, update_config as _persist_config
 
 
