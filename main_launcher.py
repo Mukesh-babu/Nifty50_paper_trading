@@ -196,7 +196,7 @@ def start_dashboard(config):
             # Allow dashboards that don't require a call signature
             start_dashboard_updates  # noqa: B018 (noop ref)
         # Run the dashboard (blocking)
-        socketio.run(app, host=host, port=port, debug=debug)
+        socketio.run(app, host=host, port=port, debug=debug, use_reloader=False)
     except ImportError as e:
         print(f"❌ Import error: {e}")
         print("   Please ensure dashboard_app.py is available (Flask-SocketIO app)")
@@ -212,7 +212,22 @@ def run_backtest():
         from algo_trading_main import run_enhanced_backtest  # user-implemented
         print("🔄 This will run the backtest on historical data")
         print("📊 Results will be saved to CSV file")
-        run_enhanced_backtest()
+        summary = run_enhanced_backtest()
+        if summary:
+            print("\n📊 Backtest Summary:")
+            for key in [
+                "total_trades",
+                "win_rate",
+                "total_return_pct",
+                "avg_trade_pct",
+                "max_drawdown_pct",
+                "sharpe_ratio",
+                "annualized_return_pct",
+            ]:
+                if key in summary:
+                    print(f"   • {key.replace('_', ' ').title()}: {summary[key]}")
+            if summary.get("export_path"):
+                print(f"   • Export: {summary['export_path']}")
         print("✅ Backtest finished")
     except ImportError as e:
         print(f"❌ Import error: {e}")

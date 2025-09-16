@@ -37,6 +37,15 @@ except Exception as e:
 IST = pytz.timezone("Asia/Kolkata")
 
 
+def _ensure_aware_ist(dt: Optional[datetime]) -> Optional[datetime]:
+    """Return a timezone-aware datetime in IST for comparisons."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return IST.localize(dt)
+    return dt.astimezone(IST)
+
+
 class MarketDataFeed:
     """Real-time market data feed for the underlying index using yfinance."""
     def __init__(self, symbol: str = "^NSEI"):
@@ -110,6 +119,17 @@ class MarketDataFeed:
         try:
             return self.data_queue.get_nowait()
         except queue.Empty:
+            return None
+
+    def last_update_age(self) -> Optional[float]:
+        last_update = _ensure_aware_ist(self.last_update)
+        if not last_update:
+            return None
+        now = datetime.now(IST)
+        try:
+            return (now - last_update).total_seconds()
+        except Exception as e:
+            logger.debug("Market data age calculation failed: %s", e)
             return None
 
     def prices(self) -> List[float]:
@@ -321,8 +341,21 @@ class TradingEngine:
         lots = max(1, min(int(max_risk / risk_per_lot), 5))
 
         required_capital = entry_price * TradingConfig.LOT_SIZE * lots
-        if required_capital > self.current_capital * 0.10:  # at most 10% in premium
-            logger.warning("🚫 Entry rejected (capital): %s", strat_name)
+        if required_capital > self.current_capital:
+            logger.warning(
+                "🚫 Entry rejected (insufficient cash) | %s needs ₹%.2f but only ₹%.2f available",
+                strat_name, required_capital, self.current_capital
+            )
+            return
+
+        capital_cap = self.current_capital * TradingConfig.PREMIUM_CAPITAL_FRACTION
+        if required_capital > capital_cap:
+            logger.warning(
+                "🚫 Entry rejected (premium %.0f%% of cash > %.0f%% cap) | %s",
+                (required_capital / max(self.current_capital, 1)) * 100,
+                TradingConfig.PREMIUM_CAPITAL_FRACTION * 100,
+                strat_name
+            )
             return
 
         symbol = f"NIFTY{strike}{'CE' if is_call else 'PE'}"
@@ -413,13 +446,20 @@ class TradingEngine:
             return False
         if len(self.positions) >= TradingConfig.MAX_OPEN_POSITIONS:
             return False
-        if self.last_trade_time:
-            now = datetime.now(IST)
-            if self.last_trade_time.tzinfo is None:
-                self.last_trade_time = IST.localize(self.last_trade_time)
-            if (now - self.last_trade_time).total_seconds() < TradingConfig.COOLDOWN_MINUTES * 60:
+        now = datetime.now(IST)
+        last_trade_time = _ensure_aware_ist(self.last_trade_time)
+        if last_trade_time is not None:
+            self.last_trade_time = last_trade_time
+            if (now - last_trade_time).total_seconds() < TradingConfig.COOLDOWN_MINUTES * 60:
                 return False
         if not self.feed._is_market_open():
+            return False
+        data_age = self.feed.last_update_age()
+        if data_age is None:
+            logger.warning("🚫 Entry blocked: awaiting live market data")
+            return False
+        if data_age > TradingConfig.DATA_STALENESS_SECONDS:
+            logger.warning("🚫 Entry blocked: market data stale (%.1fs old)", data_age)
             return False
         if self.current_capital < TradingConfig.TOTAL_CAPITAL * 0.5:
             logger.warning("🚫 Trading halted: capital below 50%% of initial")
@@ -462,6 +502,10 @@ class TradingEngine:
                 except Exception as e:
                     logger.debug("Position to_dict failed: %s", e)
 
+            last_update = _ensure_aware_ist(self.feed.last_update)
+            data_age = self.feed.last_update_age()
+            market_data_stale = data_age is None or data_age > TradingConfig.DATA_STALENESS_SECONDS
+
             return {
                 "is_running": self.is_running,
                 "current_capital": self.current_capital,
@@ -474,7 +518,9 @@ class TradingEngine:
                 "open_positions": len(self.positions),
                 "max_drawdown": self.max_drawdown * 100,
                 "current_price": self.feed.current_price,
-                "last_update": self.feed.last_update.isoformat() if self.feed.last_update else None,
+                "last_update": last_update.isoformat() if last_update else None,
+                "market_data_age_seconds": data_age,
+                "market_data_stale": market_data_stale,
                 "positions": positions_data,
                 "strategy_stats": [s.get_statistics() for s in self.strategies],
             }

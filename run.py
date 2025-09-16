@@ -34,11 +34,12 @@ def start_trading_engine():
 def start_dashboard():
     """Start the web dashboard"""
     try:
-        from dashboard_app import app, socketio
+        from dashboard_app import app, socketio, start_dashboard_updates
         print("🌐 Starting Web Dashboard on http://localhost:5000")
-        
-        socketio.run(app, host='0.0.0.0', port=5000, debug=False)
-        
+
+        start_dashboard_updates()
+        socketio.run(app, host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+
     except Exception as e:
         print(f"❌ Error in dashboard: {e}")
 

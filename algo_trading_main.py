@@ -3,23 +3,19 @@
 # Author: AI Trading Systems
 # Version: 1.2
 
-import os
 import sys
-import json
-import time
-import threading
 import logging
 import sqlite3
-import pandas as pd
-import numpy as np
-import yfinance as yf
-from datetime import datetime, timedelta, timezone
-import pytz
-from flask import Flask, render_template, jsonify, request
-from scipy.stats import norm
-import math
-import random
+from pathlib import Path
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+import pytz
+import yfinance as yf
+from scipy.stats import norm
+
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -46,10 +42,11 @@ for handler in logging.root.handlers:
 class TradingConfig:
     """Centralized configuration management"""
     # Capital Management
-    TOTAL_CAPITAL = 10000          # ₹1 Lakh for paper trading
+    TOTAL_CAPITAL = 10000          # ₹10K starting capital for paper trading
     RISK_PER_TRADE = 0.02           # 2% risk per trade (still used for sanity checks)
     LOT_SIZE = 50                   # NIFTY lot size = 50
     FEES_PER_ORDER = 64             # Estimated fees per order
+    PREMIUM_CAPITAL_FRACTION = 0.6  # Allow up to 60% of available cash per position
 
     # Risk Management (percent-based helpers; still used for sizing heuristics)
     BASE_SL_PCT = 0.03              # 3% initial stop loss assumption (for sizing heuristics)
@@ -69,6 +66,7 @@ class TradingConfig:
     MAX_TRADES_PER_DAY = 5
     MAX_OPEN_POSITIONS = 3
     COOLDOWN_MINUTES = 30
+    DATA_STALENESS_SECONDS = 120    # Require market data updates within the last 2 minutes
 
     # Market Hours (IST)
     MARKET_OPEN = "09:15"
@@ -680,6 +678,226 @@ class Position:
             'holding_minutes': self.get_holding_minutes(),
             'expiry_date': self.expiry_date
         }
+
+# -------------------------------------------------
+# Backtesting utilities
+# -------------------------------------------------
+def run_enhanced_backtest(symbol: str = "^NSEI", days: int = 5, interval: str = "5m",
+                          export: bool = True) -> Dict[str, float]:
+    """Run a lightweight moving-average backtest for diagnostics.
+
+    The launcher expects this helper to exist.  Earlier revisions removed it,
+    leading to ``ImportError`` at runtime.  This implementation keeps the
+    runtime self-contained: it tries to download historical data via
+    :mod:`yfinance` and, if none is available (e.g. offline environments),
+    generates a synthetic intraday price series so that the analytics layer can
+    still be exercised.
+
+    Returns a dictionary with headline metrics so callers (CLI/UI) can inspect
+    performance or surface the result to users.
+    """
+
+    logger.info("📈 Starting backtest for %s (%s, %dd)", symbol, interval, days)
+
+    def _interval_to_minutes(value: str) -> int:
+        try:
+            if value.endswith("m"):
+                return max(1, int(value[:-1]))
+            if value.endswith("h"):
+                return max(1, int(value[:-1]) * 60)
+        except (ValueError, AttributeError):
+            pass
+        return 5
+
+    minutes = _interval_to_minutes(interval)
+    points_per_day = max(1, int(390 / minutes))
+
+    history = pd.DataFrame()
+    try:
+        history = yf.download(
+            symbol,
+            period=f"{max(days, 1)}d",
+            interval=interval,
+            progress=False,
+            threads=False,
+        )
+    except Exception as err:
+        logger.warning("Historical download failed for %s: %s", symbol, err)
+
+    if history is None:
+        history = pd.DataFrame()
+
+    if isinstance(history, pd.DataFrame) and isinstance(history.columns, pd.MultiIndex):
+        try:
+            history = history.xs(symbol, axis=1, level=-1)
+        except Exception:
+            history = history.droplevel(-1, axis=1)
+
+    if isinstance(history, pd.DataFrame):
+        history.columns = [str(col) for col in history.columns]
+
+    if "Close" in history.columns:
+        history = history.dropna(subset=["Close"]).copy()
+    else:
+        history = pd.DataFrame()
+
+    if history.empty:
+        logger.warning("No market data available; generating synthetic price series for smoke test")
+        total_points = max(points_per_day * max(days, 1), 60)
+        end_ts = datetime.now(pytz.timezone('Asia/Kolkata'))
+        index = pd.date_range(
+            end=end_ts,
+            periods=total_points,
+            freq=f"{minutes}T",
+            tz=end_ts.tzinfo,
+        )
+        rng = np.random.default_rng(seed=42)
+        base_price = 19500.0
+        step_returns = rng.normal(loc=0.0001, scale=0.004, size=total_points)
+        price_series = pd.Series(step_returns, index=index).add(1).cumprod() * base_price
+        history = pd.DataFrame({
+            "Open": price_series.shift(1).fillna(price_series.iloc[0]),
+            "High": price_series * (1 + rng.uniform(0.0005, 0.0015, total_points)),
+            "Low": price_series * (1 - rng.uniform(0.0005, 0.0015, total_points)),
+            "Close": price_series,
+            "Volume": rng.integers(120_000, 320_000, total_points),
+        }, index=index)
+    else:
+        history.index = pd.to_datetime(history.index)
+        tzinfo = getattr(history.index, "tz", None)
+        if tzinfo is not None:
+            try:
+                history.index = history.index.tz_convert('Asia/Kolkata')
+            except Exception:
+                history.index = history.index.tz_localize('Asia/Kolkata', nonexistent='shift_forward', ambiguous='NaT')
+            history.index = history.index.tz_localize(None)
+
+    if history.empty:
+        logger.error("Backtest aborted: unable to prepare price data")
+        return {
+            "symbol": symbol,
+            "interval": interval,
+            "total_trades": 0,
+            "win_rate": 0.0,
+            "total_return_pct": 0.0,
+            "avg_trade_pct": 0.0,
+            "max_drawdown_pct": 0.0,
+            "sharpe_ratio": 0.0,
+            "annualized_return_pct": 0.0,
+            "export_path": None,
+        }
+
+    history.sort_index(inplace=True)
+    history["returns"] = history["Close"].pct_change().fillna(0.0)
+    history["fast_ma"] = history["Close"].rolling(12).mean()
+    history["slow_ma"] = history["Close"].rolling(36).mean()
+    history["signal"] = np.where(history["fast_ma"] > history["slow_ma"], 1, -1)
+    history.loc[history["slow_ma"].isna(), "signal"] = 0
+    history["position"] = history["signal"].shift(1).fillna(0).astype(int)
+    history["strategy_return"] = history["position"] * history["returns"]
+
+    equity_curve = (1 + history["strategy_return"]).cumprod()
+    drawdown = equity_curve / equity_curve.cummax() - 1
+    max_drawdown = float(drawdown.min()) if not drawdown.empty else 0.0
+
+    strategy_std = history["strategy_return"].std()
+    sharpe = 0.0
+    if strategy_std > 0:
+        sharpe = float((history["strategy_return"].mean() / strategy_std) * np.sqrt(points_per_day * 252))
+
+    total_growth = float(equity_curve.iloc[-1]) if not equity_curve.empty else 1.0
+    total_days = max(1, (history.index[-1] - history.index[0]).days + 1)
+    annualized_return = float(total_growth ** (252 / total_days) - 1) if total_days > 0 else 0.0
+
+    trades: List[Dict[str, object]] = []
+    current_pos = 0
+    entry_price = 0.0
+    entry_time: Optional[pd.Timestamp] = None
+
+    for ts, row in history.iterrows():
+        desired_pos = int(row["position"])
+        if current_pos == 0 and desired_pos != 0:
+            current_pos = desired_pos
+            entry_price = float(row["Close"])
+            entry_time = ts
+            continue
+
+        if current_pos != 0 and desired_pos != current_pos:
+            exit_price = float(row["Close"])
+            exit_time = ts
+            holding = 0.0
+            if entry_time is not None:
+                holding = max(0.0, (exit_time - entry_time).total_seconds() / 60.0)
+            pct_return = ((exit_price - entry_price) / entry_price) * current_pos if entry_price else 0.0
+            trades.append({
+                "entry_time": pd.Timestamp(entry_time).isoformat() if entry_time else pd.Timestamp(exit_time).isoformat(),
+                "exit_time": pd.Timestamp(exit_time).isoformat(),
+                "direction": "LONG" if current_pos == 1 else "SHORT",
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "pct_return": pct_return,
+                "holding_minutes": holding,
+            })
+
+            if desired_pos != 0:
+                current_pos = desired_pos
+                entry_price = float(row["Close"])
+                entry_time = ts
+            else:
+                current_pos = 0
+                entry_price = 0.0
+                entry_time = None
+
+    if current_pos != 0 and entry_time is not None:
+        exit_price = float(history.iloc[-1]["Close"])
+        exit_time = history.index[-1]
+        holding = max(0.0, (exit_time - entry_time).total_seconds() / 60.0)
+        pct_return = ((exit_price - entry_price) / entry_price) * current_pos if entry_price else 0.0
+        trades.append({
+            "entry_time": pd.Timestamp(entry_time).isoformat(),
+            "exit_time": pd.Timestamp(exit_time).isoformat(),
+            "direction": "LONG" if current_pos == 1 else "SHORT",
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "pct_return": pct_return,
+            "holding_minutes": holding,
+        })
+
+    trades_df = pd.DataFrame(trades)
+    capital = float(TradingConfig.TOTAL_CAPITAL)
+    if not trades_df.empty:
+        trades_df["pnl_rupees"] = trades_df["pct_return"] * capital
+
+    total_trades = int(len(trades_df))
+    winning_trades = int((trades_df["pct_return"] > 0).sum()) if total_trades else 0
+    total_return_pct = float(trades_df["pct_return"].sum() * 100) if total_trades else 0.0
+    avg_trade_pct = float(trades_df["pct_return"].mean() * 100) if total_trades else 0.0
+    win_rate = float((winning_trades / total_trades) * 100) if total_trades else 0.0
+
+    export_path = None
+    if export and not trades_df.empty:
+        exports_dir = Path("exports")
+        exports_dir.mkdir(parents=True, exist_ok=True)
+        export_file = exports_dir / f"backtest_{symbol.replace('^', '').lower()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        trades_df.to_csv(export_file, index=False)
+        export_path = str(export_file)
+        logger.info("📁 Backtest trades exported to %s", export_file)
+
+    summary = {
+        "symbol": symbol,
+        "interval": interval,
+        "total_trades": total_trades,
+        "win_rate": round(win_rate, 2),
+        "total_return_pct": round(total_return_pct, 2),
+        "avg_trade_pct": round(avg_trade_pct, 2),
+        "max_drawdown_pct": round(max_drawdown * 100, 2),
+        "sharpe_ratio": round(sharpe, 2),
+        "annualized_return_pct": round(annualized_return * 100, 2),
+        "export_path": export_path,
+    }
+
+    logger.info("✅ Backtest summary: %s", summary)
+    return summary
 
 # -------------------------------------------------
 # CSV export

@@ -6,6 +6,7 @@ from flask import Flask, render_template, jsonify, request, send_file
 from flask_socketio import SocketIO, emit
 import json
 import os
+from pathlib import Path
 from datetime import datetime
 import pandas as pd
 import plotly.graph_objs as go
@@ -14,12 +15,11 @@ import time
 import sys
 import threading
 
-# --- Templates dir ---
-os.makedirs("templates", exist_ok=True)
+# --- Paths ---
+BASE_DIR = Path(__file__).resolve().parent
 
 # --- Imports & logger fallback ---
 import logging
-logger = None
 logger = None
 try:
     from trading_engine import TradingEngine  # single import, used everywhere
@@ -40,7 +40,7 @@ except ImportError as e:
         sys.exit(1)
 
 # --- Flask / SocketIO ---
-app = Flask(__name__)
+app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
 app.config['SECRET_KEY'] = 'algo_trading_secret_key_2024'
 
 # Force threading backend to avoid eventlet/gevent mismatches unless you explicitly install/configure them.
@@ -222,10 +222,10 @@ def create_hourly_performance_chart():
 @app.route('/')
 def dashboard():
     """Main dashboard page"""
-    template_path = os.path.join('templates', 'dashboard.html')
-    if not os.path.exists(template_path):
-        os.makedirs('templates', exist_ok=True)
-        with open(template_path, 'w', encoding='utf-8') as f:
+    template_path = BASE_DIR / "templates" / "dashboard.html"
+    if not template_path.exists():
+        template_path.parent.mkdir(parents=True, exist_ok=True)
+        with template_path.open('w', encoding='utf-8') as f:
             f.write(get_dashboard_html())
     try:
         return render_template('dashboard.html')
@@ -445,9 +445,22 @@ def ensure_background_task():
         ensure_background_task._started = True
         logger.info("Dashboard update background task started")
 
+def start_dashboard_updates() -> bool:
+    """Public helper to start Socket.IO background updates.
+
+    Flask launchers import this symbol (see ``main_launcher.py``) to ensure
+    the dashboard emits live status messages.  Older versions of this module
+    did not expose the helper which caused ``ImportError`` at runtime.  The
+    function is idempotent thanks to :func:`ensure_background_task` keeping an
+    internal flag, so calling it repeatedly is safe.
+    """
+
+    ensure_background_task()
+    return True
+
 # ============= Main =============
 
 if __name__ == '__main__':
-    ensure_background_task()
+    start_dashboard_updates()
     logger.info("🌐 Starting Trading Dashboard on http://localhost:5000")
     socketio.run(app, host='0.0.0.0', port=5000, debug=False, use_reloader=False)
