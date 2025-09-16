@@ -18,8 +18,7 @@ import yfinance as yf
 try:
     from algo_trading_main import (
         TradingConfig, DatabaseManager, TechnicalIndicators,
-        OptionsCalculator, Position,
-        MeanReversionStrategy, MomentumBreakoutStrategy, VolatilityRegimeStrategy,
+        OptionsCalculator, Position, STRATEGY_REGISTRY,
         export_trades_to_csv, logger
     )
 except Exception as e:
@@ -35,6 +34,15 @@ except Exception as e:
 
 
 IST = pytz.timezone("Asia/Kolkata")
+
+
+def _ensure_aware_ist(dt: Optional[datetime]) -> Optional[datetime]:
+    """Return a timezone-aware datetime in IST for comparisons."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return IST.localize(dt)
+    return dt.astimezone(IST)
 
 
 def _ensure_aware_ist(dt: Optional[datetime]) -> Optional[datetime]:
@@ -115,6 +123,27 @@ class MarketDataFeed:
         is_weekday = now.weekday() < 5
         return is_weekday and (market_open <= current_time <= market_close)
 
+
+    def get_latest(self) -> Optional[Dict]:
+        try:
+            return self.data_queue.get_nowait()
+        except queue.Empty:
+            return None
+
+    def last_update_age(self) -> Optional[float]:
+        last_update = _ensure_aware_ist(self.last_update)
+        if not last_update:
+            return None
+        now = datetime.now(IST)
+        try:
+            return (now - last_update).total_seconds()
+        except Exception as e:
+            logger.debug("Market data age calculation failed: %s", e)
+            return None
+
+    def prices(self) -> List[float]:
+        return self.historical_prices[-300:].copy()
+
     def get_latest(self) -> Optional[Dict]:
         try:
             return self.data_queue.get_nowait()
@@ -136,17 +165,15 @@ class MarketDataFeed:
         return self.historical_prices[-300:].copy()
 
 
+
 class TradingEngine:
     """Main engine that orchestrates feed, signals, risk, and persistence."""
     def __init__(self):
         self.db = DatabaseManager()
         self.feed = MarketDataFeed()
         self.positions: Dict[str, Position] = {}
-        self.strategies = [
-            MeanReversionStrategy(),
-            MomentumBreakoutStrategy(),
-            VolatilityRegimeStrategy(),
-        ]
+        TradingConfig.reload()
+        self.strategies = self._instantiate_strategies()
 
         self.is_running = False
         self.current_capital = TradingConfig.TOTAL_CAPITAL
@@ -176,6 +203,7 @@ class TradingEngine:
             f"Risk/trade {TradingConfig.RISK_PER_TRADE * 100:.1f}%"
         )
 
+        self.refresh_config()
         self.is_running = True
         self.feed.start()
 
@@ -204,7 +232,42 @@ class TradingEngine:
             csv_file = export_trades_to_csv(self.db)
             if csv_file:
                 logger.info("📁 Trades exported: %s", csv_file)
-            logger.info("✅ Trading engine stopped")
+        logger.info("✅ Trading engine stopped")
+
+    def refresh_config(self):
+        """Reload config values and refresh strategy parameters at runtime."""
+        TradingConfig.reload()
+        self.strategies = self._instantiate_strategies()
+        for pos in self.positions.values():
+            pos.fixed_risk_rupees = TradingConfig.FIXED_RISK_RUPEES
+            pos.target_trigger_rupees = TradingConfig.TARGET_TRIGGER_RUPEES
+        if not self.is_running:
+            self.current_capital = TradingConfig.TOTAL_CAPITAL
+            self.peak_capital = self.current_capital
+        logger.info("🔄 Trading engine configuration refreshed")
+
+    def _instantiate_strategies(self) -> List:
+        strategies = []
+        for name in TradingConfig.ACTIVE_STRATEGIES:
+            strat_cls = STRATEGY_REGISTRY.get(name)
+            if not strat_cls:
+                logger.warning("Unknown strategy in config: %s", name)
+                continue
+            strat = strat_cls()
+            if hasattr(strat, "refresh_from_config"):
+                try:
+                    strat.refresh_from_config()
+                except Exception as exc:
+                    logger.debug("Strategy refresh failed (%s): %s", name, exc)
+            strategies.append(strat)
+
+        if not strategies:
+            # Fallback to ensure engine has at least one strategy active
+            default_name, default_cls = next(iter(STRATEGY_REGISTRY.items()))
+            logger.warning("No valid strategies active. Falling back to %s", default_name)
+            strategies.append(default_cls())
+
+        return strategies
 
     # ---------- Core loop ----------
     def _trading_loop(self):
@@ -361,6 +424,55 @@ class TradingEngine:
         symbol = f"NIFTY{strike}{'CE' if is_call else 'PE'}"
         pid = f"{symbol}_{entry_time.strftime('%Y%m%d_%H%M%S')}"
 
+
+        lots = max(1, min(int(max_risk / risk_per_lot), 5))
+
+        required_capital = entry_price * TradingConfig.LOT_SIZE * lots
+        if required_capital > self.current_capital:
+            logger.warning(
+                "🚫 Entry rejected (insufficient cash) | %s needs ₹%.2f but only ₹%.2f available",
+                strat_name, required_capital, self.current_capital
+            )
+            return
+
+        capital_cap = self.current_capital * TradingConfig.PREMIUM_CAPITAL_FRACTION
+        if required_capital > capital_cap:
+            logger.warning(
+                "🚫 Entry rejected (premium %.0f%% of cash > %.0f%% cap) | %s",
+                (required_capital / max(self.current_capital, 1)) * 100,
+                TradingConfig.PREMIUM_CAPITAL_FRACTION * 100,
+                strat_name
+            )
+            return
+
+        symbol = f"NIFTY{strike}{'CE' if is_call else 'PE'}"
+        pid = f"{symbol}_{entry_time.strftime('%Y%m%d_%H%M%S')}"
+
+        lots = max(1, min(int(max_risk / risk_per_lot), 5))
+
+        premium_cap_pct = getattr(TradingConfig, "MAX_PREMIUM_ALLOCATION_PCT", 0.10)
+        lot_cost = entry_price * TradingConfig.LOT_SIZE
+        if lot_cost <= 0:
+            logger.warning("🚫 Entry rejected (invalid lot cost): %s", strat_name)
+            return
+
+        max_lots_capital = int((self.current_capital * premium_cap_pct) / lot_cost)
+        if max_lots_capital <= 0:
+            logger.warning("🚫 Entry rejected (capital limit): %s", strat_name)
+            return
+
+        lots = min(lots, max_lots_capital)
+        if lots <= 0:
+            logger.warning("🚫 Entry rejected (zero lots after cap): %s", strat_name)
+            return
+
+        required_capital = lot_cost * lots
+
+        symbol = f"NIFTY{strike}{'CE' if is_call else 'PE'}"
+        pid = f"{symbol}_{entry_time.strftime('%Y%m%d_%H%M%S')}"
+
+
+
         pos = Position(
             symbol=symbol,
             option_type=signal["option_type"],
@@ -441,6 +553,7 @@ class TradingEngine:
             self._close_position(pid, reason, md)
 
     # ---------- Risk gates ----------
+
     def _can_enter(self) -> bool:
         if self.daily_trade_count >= TradingConfig.MAX_TRADES_PER_DAY:
             return False
@@ -465,6 +578,32 @@ class TradingEngine:
             logger.warning("🚫 Trading halted: capital below 50%% of initial")
             return False
         return True
+
+    def _can_enter(self) -> bool:
+        if self.daily_trade_count >= TradingConfig.MAX_TRADES_PER_DAY:
+            return False
+        if len(self.positions) >= TradingConfig.MAX_OPEN_POSITIONS:
+            return False
+        now = datetime.now(IST)
+        last_trade_time = _ensure_aware_ist(self.last_trade_time)
+        if last_trade_time is not None:
+            self.last_trade_time = last_trade_time
+            if (now - last_trade_time).total_seconds() < TradingConfig.COOLDOWN_MINUTES * 60:
+                return False
+        if not self.feed._is_market_open():
+            return False
+        data_age = self.feed.last_update_age()
+        if data_age is None:
+            logger.warning("🚫 Entry blocked: awaiting live market data")
+            return False
+        if data_age > TradingConfig.DATA_STALENESS_SECONDS:
+            logger.warning("🚫 Entry blocked: market data stale (%.1fs old)", data_age)
+            return False
+        if self.current_capital < TradingConfig.TOTAL_CAPITAL * 0.5:
+            logger.warning("🚫 Trading halted: capital below 50%% of initial")
+            return False
+        return True
+
 
     # ---------- Scheduler ----------
     def _daily_reset(self):
@@ -524,6 +663,63 @@ class TradingEngine:
                 "positions": positions_data,
                 "strategy_stats": [s.get_statistics() for s in self.strategies],
             }
+
+    def get_status(self) -> Dict:
+        try:
+            unreal = sum(p.unrealized_pnl for p in self.positions.values())
+            positions_data = []
+            for p in self.positions.values():
+                try:
+                    positions_data.append(p.to_dict())
+                except Exception as e:
+                    logger.debug("Position to_dict failed: %s", e)
+
+            last_update = _ensure_aware_ist(self.feed.last_update)
+            data_age = self.feed.last_update_age()
+            market_data_stale = data_age is None or data_age > TradingConfig.DATA_STALENESS_SECONDS
+
+    def get_status(self) -> Dict:
+        try:
+            unreal = sum(p.unrealized_pnl for p in self.positions.values())
+            positions_data = []
+            for p in self.positions.values():
+                try:
+                    positions_data.append(p.to_dict())
+                except Exception as e:
+                    logger.debug("Position to_dict failed: %s", e)
+
+            return {
+                "is_running": self.is_running,
+                "current_capital": self.current_capital,
+                "total_pnl": self.total_pnl,
+
+                "unrealized_pnl": unreal,
+                "total_trades": self.total_trades,
+
+                "unrealized_pnl": unreal,
+                "total_trades": self.total_trades,
+
+                "winning_trades": self.winning_trades,
+                "win_rate": (self.winning_trades / max(self.total_trades, 1)) * 100,
+                "daily_trade_count": self.daily_trade_count,
+                "open_positions": len(self.positions),
+                "max_drawdown": self.max_drawdown * 100,
+                "current_price": self.feed.current_price,
+
+                "last_update": last_update.isoformat() if last_update else None,
+                "market_data_age_seconds": data_age,
+                "market_data_stale": market_data_stale,
+                "positions": positions_data,
+                "strategy_stats": [s.get_statistics() for s in self.strategies],
+
+                "last_update": self.feed.last_update.isoformat() if self.feed.last_update else None,
+                "positions": positions_data,
+                "strategy_stats": [s.get_statistics() for s in self.strategies],
+                "active_strategies": TradingConfig.ACTIVE_STRATEGIES,
+                "available_strategies": list(STRATEGY_REGISTRY.keys()),
+
+            }
+
         except Exception as e:
             logger.error("get_status failed: %s", e)
             return {

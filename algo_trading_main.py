@@ -3,6 +3,7 @@
 # Author: AI Trading Systems
 # Version: 1.2
 
+
 import sys
 import logging
 import sqlite3
@@ -17,6 +18,27 @@ import yfinance as yf
 from scipy.stats import norm
 
 import warnings
+
+import os
+import sys
+import json
+import time
+import threading
+import logging
+import sqlite3
+from copy import deepcopy
+import pandas as pd
+import numpy as np
+import yfinance as yf
+from datetime import datetime, timedelta, timezone
+import pytz
+from flask import Flask, render_template, jsonify, request
+from scipy.stats import norm
+import math
+import random
+from typing import Dict, List, Optional, Tuple
+import warnings
+
 warnings.filterwarnings('ignore')
 
 # -------------------------------------------------
@@ -36,9 +58,11 @@ for handler in logging.root.handlers:
     if isinstance(handler, logging.StreamHandler) and handler.stream == sys.stdout:
         handler.stream = sys.stdout
 
+
 # -------------------------------------------------
 # Config
 # -------------------------------------------------
+
 class TradingConfig:
     """Centralized configuration management"""
     # Capital Management
@@ -52,6 +76,21 @@ class TradingConfig:
     BASE_SL_PCT = 0.03              # 3% initial stop loss assumption (for sizing heuristics)
     BASE_TP_PCT = 0.06              # (not used by rupee exit, but kept for analytics)
     PARTIAL_TP_PCT = 0.04           # (kept for analytics)
+
+class TradingConfig:
+    """Centralized configuration management"""
+    # Capital Management
+    TOTAL_CAPITAL = 10000          # ₹10K starting capital for paper trading
+    RISK_PER_TRADE = 0.02           # 2% risk per trade (still used for sanity checks)
+    LOT_SIZE = 50                   # NIFTY lot size = 50
+    FEES_PER_ORDER = 64             # Estimated fees per order
+    PREMIUM_CAPITAL_FRACTION = 0.6  # Allow up to 60% of available cash per position
+
+    # Risk Management (percent-based helpers; still used for sizing heuristics)
+    BASE_SL_PCT = 0.03              # 3% initial stop loss assumption (for sizing heuristics)
+    BASE_TP_PCT = 0.06              # (not used by rupee exit, but kept for analytics)
+    PARTIAL_TP_PCT = 0.04           # (kept for analytics)
+
     TRAIL_PCT = 0.02                # 2% trailing stop (applies to option price when trailing)
 
     # New: Execution intensity & fixed-rupee risk model
@@ -63,6 +102,7 @@ class TradingConfig:
     TRAIL_AFTER_TRIGGER = True      # Enable trailing after trigger
 
     # Trading Limits
+
     MAX_TRADES_PER_DAY = 5
     MAX_OPEN_POSITIONS = 3
     COOLDOWN_MINUTES = 30
@@ -70,6 +110,15 @@ class TradingConfig:
 
     # Market Hours (IST)
     MARKET_OPEN = "09:15"
+
+    MAX_TRADES_PER_DAY = 5
+    MAX_OPEN_POSITIONS = 3
+    COOLDOWN_MINUTES = 30
+    DATA_STALENESS_SECONDS = 120    # Require market data updates within the last 2 minutes
+
+    # Market Hours (IST)
+    MARKET_OPEN = "09:15"
+
     MARKET_CLOSE = "15:30"
     EOD_EXIT = "15:15"
 
@@ -81,6 +130,221 @@ class TradingConfig:
     BB_STD = 2.0
     VOL_LOOKBACK = 20
     VOL_THRESHOLD = 1.2
+
+from config.manager import DEFAULT_CONFIG, ensure_config, load_config, update_config as _persist_config
+
+
+# -------------------------------------------------
+# Config
+# -------------------------------------------------
+class TradingConfig:
+    """Centralized configuration management loaded from ``config/config.json``."""
+
+    # Defaults (overwritten by reload)
+    TOTAL_CAPITAL = DEFAULT_CONFIG["trading"]["total_capital"]
+    RISK_PER_TRADE = DEFAULT_CONFIG["trading"]["risk_per_trade"]
+    LOT_SIZE = DEFAULT_CONFIG["trading"]["lot_size"]
+    FEES_PER_ORDER = DEFAULT_CONFIG["trading"]["fees_per_order"]
+
+    BASE_SL_PCT = DEFAULT_CONFIG["trading"]["base_sl_pct"]
+    BASE_TP_PCT = DEFAULT_CONFIG["trading"]["base_tp_pct"]
+    PARTIAL_TP_PCT = DEFAULT_CONFIG["trading"]["partial_tp_pct"]
+    TRAIL_PCT = DEFAULT_CONFIG["trading"]["trail_pct"]
+
+    ENTRY_CONFIDENCE_MIN = DEFAULT_CONFIG["trading"]["entry_confidence_min"]
+    MAX_LOTS_CAP = DEFAULT_CONFIG["trading"]["max_lots_cap"]
+    MAX_PREMIUM_ALLOCATION_PCT = DEFAULT_CONFIG["trading"].get("max_premium_allocation_pct", 0.10)
+    FIXED_RISK_RUPEES = DEFAULT_CONFIG["trading"]["fixed_risk_rupees"]
+    TARGET_TRIGGER_RUPEES = DEFAULT_CONFIG["trading"]["target_trigger_rupees"]
+    TRAIL_AFTER_TRIGGER = DEFAULT_CONFIG["trading"]["trail_after_trigger"]
+
+    MAX_TRADES_PER_DAY = DEFAULT_CONFIG["trading"]["max_trades_per_day"]
+    MAX_OPEN_POSITIONS = DEFAULT_CONFIG["trading"]["max_open_positions"]
+    COOLDOWN_MINUTES = DEFAULT_CONFIG["trading"]["cooldown_minutes"]
+
+    MARKET_OPEN = DEFAULT_CONFIG["trading"]["market_open"]
+    MARKET_CLOSE = DEFAULT_CONFIG["trading"]["market_close"]
+    EOD_EXIT = DEFAULT_CONFIG["trading"]["eod_exit"]
+
+    RSI_PERIOD = DEFAULT_CONFIG["indicators"]["rsi_period"]
+    RSI_OVERSOLD = DEFAULT_CONFIG["indicators"]["rsi_oversold"]
+    RSI_OVERBOUGHT = DEFAULT_CONFIG["indicators"]["rsi_overbought"]
+    BB_PERIOD = DEFAULT_CONFIG["indicators"]["bb_period"]
+    BB_STD = DEFAULT_CONFIG["indicators"]["bb_std"]
+    VOL_LOOKBACK = DEFAULT_CONFIG["indicators"]["vol_lookback"]
+    VOL_THRESHOLD = DEFAULT_CONFIG["indicators"]["vol_threshold"]
+
+    MOMENTUM_LOOKBACK = DEFAULT_CONFIG["strategy_params"]["Momentum Breakout"]["lookback_period"]
+    MOMENTUM_RANGE_THRESHOLD = DEFAULT_CONFIG["strategy_params"]["Momentum Breakout"]["range_threshold"]
+    MOMENTUM_STRIKE_ADJUSTMENT = DEFAULT_CONFIG["strategy_params"]["Momentum Breakout"]["strike_adjustment"]
+
+    VOLATILITY_TRIGGER = DEFAULT_CONFIG["strategy_params"]["Volatility Regime"]["vol_threshold"]
+    VOL_REGIME_RSI_BUY = DEFAULT_CONFIG["strategy_params"]["Volatility Regime"]["rsi_buy"]
+    VOL_REGIME_RSI_SELL = DEFAULT_CONFIG["strategy_params"]["Volatility Regime"]["rsi_sell"]
+    VOL_REGIME_STRIKE_ADJUSTMENT = DEFAULT_CONFIG["strategy_params"]["Volatility Regime"]["strike_adjustment"]
+
+    ADAPTIVE_SHORT_EMA = DEFAULT_CONFIG["strategy_params"]["Adaptive Trend"]["short_ema"]
+    ADAPTIVE_LONG_EMA = DEFAULT_CONFIG["strategy_params"]["Adaptive Trend"]["long_ema"]
+    ADAPTIVE_RSI_CONFIRM = DEFAULT_CONFIG["strategy_params"]["Adaptive Trend"]["trend_confirmation_rsi"]
+    ADAPTIVE_STRIKE_ADJUSTMENT = DEFAULT_CONFIG["strategy_params"]["Adaptive Trend"]["strike_adjustment"]
+    ADAPTIVE_VOL_FLOOR = DEFAULT_CONFIG["strategy_params"]["Adaptive Trend"]["volatility_floor"]
+
+    ACTIVE_STRATEGIES: List[str] = list(DEFAULT_CONFIG["trading"]["active_strategies"])
+    STRATEGY_PARAMETERS: Dict[str, Dict] = deepcopy(DEFAULT_CONFIG["strategy_params"])
+    BACKTEST = deepcopy(DEFAULT_CONFIG["backtest"])
+
+    _raw_config: Dict[str, Dict] = {}
+    _lock = threading.RLock()
+
+    @classmethod
+    def reload(cls) -> Dict[str, Dict]:
+        """Reload configuration from disk and populate class-level attributes."""
+
+        with cls._lock:
+            ensure_config()
+            config = load_config()
+            trading = config.get("trading", {})
+            indicators = config.get("indicators", {})
+            strategy_params = config.get("strategy_params", {})
+            backtest = config.get("backtest", {})
+
+            cls.TOTAL_CAPITAL = float(trading.get("total_capital", cls.TOTAL_CAPITAL))
+            cls.RISK_PER_TRADE = float(trading.get("risk_per_trade", cls.RISK_PER_TRADE))
+            cls.LOT_SIZE = int(trading.get("lot_size", cls.LOT_SIZE))
+            cls.FEES_PER_ORDER = float(trading.get("fees_per_order", cls.FEES_PER_ORDER))
+            cls.BASE_SL_PCT = float(trading.get("base_sl_pct", cls.BASE_SL_PCT))
+            cls.BASE_TP_PCT = float(trading.get("base_tp_pct", cls.BASE_TP_PCT))
+            cls.PARTIAL_TP_PCT = float(trading.get("partial_tp_pct", cls.PARTIAL_TP_PCT))
+            cls.TRAIL_PCT = float(trading.get("trail_pct", cls.TRAIL_PCT))
+            cls.ENTRY_CONFIDENCE_MIN = int(trading.get("entry_confidence_min", cls.ENTRY_CONFIDENCE_MIN))
+            cls.MAX_LOTS_CAP = int(trading.get("max_lots_cap", cls.MAX_LOTS_CAP))
+            cls.MAX_PREMIUM_ALLOCATION_PCT = float(
+                trading.get("max_premium_allocation_pct", cls.MAX_PREMIUM_ALLOCATION_PCT)
+            )
+            cls.FIXED_RISK_RUPEES = float(trading.get("fixed_risk_rupees", cls.FIXED_RISK_RUPEES))
+            cls.TARGET_TRIGGER_RUPEES = float(trading.get("target_trigger_rupees", cls.TARGET_TRIGGER_RUPEES))
+            cls.TRAIL_AFTER_TRIGGER = bool(trading.get("trail_after_trigger", cls.TRAIL_AFTER_TRIGGER))
+            cls.MAX_TRADES_PER_DAY = int(trading.get("max_trades_per_day", cls.MAX_TRADES_PER_DAY))
+            cls.MAX_OPEN_POSITIONS = int(trading.get("max_open_positions", cls.MAX_OPEN_POSITIONS))
+            cls.COOLDOWN_MINUTES = int(trading.get("cooldown_minutes", cls.COOLDOWN_MINUTES))
+            cls.MARKET_OPEN = str(trading.get("market_open", cls.MARKET_OPEN))
+            cls.MARKET_CLOSE = str(trading.get("market_close", cls.MARKET_CLOSE))
+            cls.EOD_EXIT = str(trading.get("eod_exit", cls.EOD_EXIT))
+
+            cls.RSI_PERIOD = int(indicators.get("rsi_period", cls.RSI_PERIOD))
+            cls.RSI_OVERSOLD = float(strategy_params.get("Mean Reversion", {}).get(
+                "rsi_oversold", indicators.get("rsi_oversold", cls.RSI_OVERSOLD)
+            ))
+            cls.RSI_OVERBOUGHT = float(strategy_params.get("Mean Reversion", {}).get(
+                "rsi_overbought", indicators.get("rsi_overbought", cls.RSI_OVERBOUGHT)
+            ))
+            cls.BB_PERIOD = int(indicators.get("bb_period", cls.BB_PERIOD))
+            cls.BB_STD = float(indicators.get("bb_std", cls.BB_STD))
+            cls.VOL_LOOKBACK = int(indicators.get("vol_lookback", cls.VOL_LOOKBACK))
+            cls.VOL_THRESHOLD = float(indicators.get("vol_threshold", cls.VOL_THRESHOLD))
+
+            momentum = strategy_params.get("Momentum Breakout", {})
+            cls.MOMENTUM_LOOKBACK = int(momentum.get("lookback_period", cls.MOMENTUM_LOOKBACK))
+            cls.MOMENTUM_RANGE_THRESHOLD = float(momentum.get("range_threshold", cls.MOMENTUM_RANGE_THRESHOLD))
+            cls.MOMENTUM_STRIKE_ADJUSTMENT = int(momentum.get("strike_adjustment", cls.MOMENTUM_STRIKE_ADJUSTMENT))
+
+            vol_params = strategy_params.get("Volatility Regime", {})
+            cls.VOLATILITY_TRIGGER = float(vol_params.get("vol_threshold", cls.VOLATILITY_TRIGGER))
+            cls.VOL_REGIME_RSI_BUY = float(vol_params.get("rsi_buy", cls.VOL_REGIME_RSI_BUY))
+            cls.VOL_REGIME_RSI_SELL = float(vol_params.get("rsi_sell", cls.VOL_REGIME_RSI_SELL))
+            cls.VOL_REGIME_STRIKE_ADJUSTMENT = int(vol_params.get("strike_adjustment", cls.VOL_REGIME_STRIKE_ADJUSTMENT))
+
+            adaptive = strategy_params.get("Adaptive Trend", {})
+            cls.ADAPTIVE_SHORT_EMA = int(adaptive.get("short_ema", cls.ADAPTIVE_SHORT_EMA))
+            cls.ADAPTIVE_LONG_EMA = int(adaptive.get("long_ema", cls.ADAPTIVE_LONG_EMA))
+            cls.ADAPTIVE_RSI_CONFIRM = float(adaptive.get("trend_confirmation_rsi", cls.ADAPTIVE_RSI_CONFIRM))
+            cls.ADAPTIVE_STRIKE_ADJUSTMENT = int(adaptive.get("strike_adjustment", cls.ADAPTIVE_STRIKE_ADJUSTMENT))
+            cls.ADAPTIVE_VOL_FLOOR = float(adaptive.get("volatility_floor", cls.ADAPTIVE_VOL_FLOOR))
+
+            cls.ACTIVE_STRATEGIES = list(trading.get("active_strategies", cls.ACTIVE_STRATEGIES))
+            cls.STRATEGY_PARAMETERS = deepcopy(strategy_params)
+            cls.BACKTEST = deepcopy(backtest) if backtest else deepcopy(DEFAULT_CONFIG["backtest"])
+
+            cls._raw_config = deepcopy(config)
+            return deepcopy(config)
+
+    @classmethod
+    def to_dict(cls) -> Dict[str, Dict]:
+        with cls._lock:
+            if not cls._raw_config:
+                cls.reload()
+            return deepcopy(cls._raw_config)
+
+    @classmethod
+    def to_dashboard(cls) -> Dict[str, Dict]:
+        """Return a sanitized dictionary representation for API responses."""
+        cls.reload()
+        return {
+            "trading": {
+                "total_capital": cls.TOTAL_CAPITAL,
+                "risk_per_trade": cls.RISK_PER_TRADE,
+                "lot_size": cls.LOT_SIZE,
+                "fees_per_order": cls.FEES_PER_ORDER,
+                "base_sl_pct": cls.BASE_SL_PCT,
+                "base_tp_pct": cls.BASE_TP_PCT,
+                "partial_tp_pct": cls.PARTIAL_TP_PCT,
+                "trail_pct": cls.TRAIL_PCT,
+                "entry_confidence_min": cls.ENTRY_CONFIDENCE_MIN,
+                "max_lots_cap": cls.MAX_LOTS_CAP,
+                "max_premium_allocation_pct": cls.MAX_PREMIUM_ALLOCATION_PCT,
+                "fixed_risk_rupees": cls.FIXED_RISK_RUPEES,
+                "target_trigger_rupees": cls.TARGET_TRIGGER_RUPEES,
+                "trail_after_trigger": cls.TRAIL_AFTER_TRIGGER,
+                "max_trades_per_day": cls.MAX_TRADES_PER_DAY,
+                "max_open_positions": cls.MAX_OPEN_POSITIONS,
+                "cooldown_minutes": cls.COOLDOWN_MINUTES,
+                "market_open": cls.MARKET_OPEN,
+                "market_close": cls.MARKET_CLOSE,
+                "eod_exit": cls.EOD_EXIT,
+                "active_strategies": cls.ACTIVE_STRATEGIES,
+            },
+            "indicators": {
+                "rsi_period": cls.RSI_PERIOD,
+                "rsi_oversold": cls.RSI_OVERSOLD,
+                "rsi_overbought": cls.RSI_OVERBOUGHT,
+                "bb_period": cls.BB_PERIOD,
+                "bb_std": cls.BB_STD,
+                "vol_lookback": cls.VOL_LOOKBACK,
+                "vol_threshold": cls.VOL_THRESHOLD,
+            },
+            "strategy_params": deepcopy(cls.STRATEGY_PARAMETERS),
+            "backtest": deepcopy(cls.BACKTEST),
+        }
+
+    @classmethod
+    def update_config(cls, patch: Dict[str, Dict]) -> Dict[str, Dict]:
+        with cls._lock:
+            merged = _persist_config(patch)
+            cls._raw_config = deepcopy(merged)
+            cls.reload()
+            return cls.to_dashboard()
+
+    @classmethod
+    def set_active_strategies(cls, strategies: List[str]) -> Dict[str, Dict]:
+        return cls.update_config({"trading": {"active_strategies": strategies}})
+
+    @classmethod
+    def update_strategy_params(cls, name: str, params: Dict) -> Dict[str, Dict]:
+        return cls.update_config({"strategy_params": {name: params}})
+
+    @classmethod
+    def get_strategy_params(cls, name: str) -> Dict:
+        cls.reload()
+        return deepcopy(cls.STRATEGY_PARAMETERS.get(name, {}))
+
+    @classmethod
+    def get_backtest_defaults(cls) -> Dict[str, Dict]:
+        cls.reload()
+        return deepcopy(cls.BACKTEST)
+
+
+# Load configuration at import time so class attributes reflect file contents
+TradingConfig.reload()
 
 # -------------------------------------------------
 # Database
@@ -395,6 +659,14 @@ class MeanReversionStrategy(TradingStrategy):
         super().__init__("Mean Reversion")
         self.rsi_oversold = TradingConfig.RSI_OVERSOLD
         self.rsi_overbought = TradingConfig.RSI_OVERBOUGHT
+        self.strike_adjustment = 0
+        self.refresh_from_config()
+
+    def refresh_from_config(self):
+        params = TradingConfig.get_strategy_params(self.name)
+        self.rsi_oversold = float(params.get("rsi_oversold", TradingConfig.RSI_OVERSOLD))
+        self.rsi_overbought = float(params.get("rsi_overbought", TradingConfig.RSI_OVERBOUGHT))
+        self.strike_adjustment = int(params.get("strike_adjustment", 0))
 
     def generate_signal(self, market_data: Dict, technical_data: Dict) -> Optional[Dict]:
         """Generate mean reversion signals"""
@@ -419,7 +691,7 @@ class MeanReversionStrategy(TradingStrategy):
                 'option_type': 'CE',
                 'reason': 'MEAN_REVERSION_OVERSOLD',
                 'confidence': min(100, (self.rsi_oversold - rsi) * 2),
-                'strike_adjustment': 0  # ATM strike
+                'strike_adjustment': self.strike_adjustment
             }
 
         # Overbought condition - Buy Put
@@ -429,7 +701,7 @@ class MeanReversionStrategy(TradingStrategy):
                 'option_type': 'PE',
                 'reason': 'MEAN_REVERSION_OVERBOUGHT',
                 'confidence': min(100, (rsi - self.rsi_overbought) * 2),
-                'strike_adjustment': 0  # ATM strike
+                'strike_adjustment': self.strike_adjustment
             }
 
         if signal:
@@ -442,7 +714,16 @@ class MomentumBreakoutStrategy(TradingStrategy):
 
     def __init__(self):
         super().__init__("Momentum Breakout")
-        self.lookback_period = 10
+        self.lookback_period = TradingConfig.MOMENTUM_LOOKBACK
+        self.range_threshold = TradingConfig.MOMENTUM_RANGE_THRESHOLD
+        self.strike_adjustment = TradingConfig.MOMENTUM_STRIKE_ADJUSTMENT
+        self.refresh_from_config()
+
+    def refresh_from_config(self):
+        params = TradingConfig.get_strategy_params(self.name)
+        self.lookback_period = int(params.get("lookback_period", TradingConfig.MOMENTUM_LOOKBACK))
+        self.range_threshold = float(params.get("range_threshold", TradingConfig.MOMENTUM_RANGE_THRESHOLD))
+        self.strike_adjustment = int(params.get("strike_adjustment", TradingConfig.MOMENTUM_STRIKE_ADJUSTMENT))
 
     def generate_signal(self, market_data: Dict, technical_data: Dict, historical_prices: List[float]) -> Optional[Dict]:
         """Generate momentum breakout signals"""
@@ -464,7 +745,7 @@ class MomentumBreakoutStrategy(TradingStrategy):
         range_pct = (recent_high - recent_low) / max(recent_low, 1e-9)
 
         # Need decent range (loosened to 0.6%)
-        if range_pct < 0.006:
+        if range_pct < self.range_threshold:
             return None
 
         signal = None
@@ -476,7 +757,7 @@ class MomentumBreakoutStrategy(TradingStrategy):
                 'option_type': 'CE',
                 'reason': 'MOMENTUM_BREAKOUT_UP',
                 'confidence': min(100, range_pct * 1000),  # Scale with range
-                'strike_adjustment': 50  # Slightly OTM
+                'strike_adjustment': self.strike_adjustment
             }
 
         # Downward breakout (buffer loosened)
@@ -486,7 +767,7 @@ class MomentumBreakoutStrategy(TradingStrategy):
                 'option_type': 'PE',
                 'reason': 'MOMENTUM_BREAKOUT_DOWN',
                 'confidence': min(100, range_pct * 1000),
-                'strike_adjustment': 50  # Slightly OTM
+                'strike_adjustment': self.strike_adjustment
             }
 
         if signal:
@@ -499,6 +780,18 @@ class VolatilityRegimeStrategy(TradingStrategy):
 
     def __init__(self):
         super().__init__("Volatility Regime")
+        self.vol_threshold = TradingConfig.VOLATILITY_TRIGGER
+        self.rsi_buy = TradingConfig.VOL_REGIME_RSI_BUY
+        self.rsi_sell = TradingConfig.VOL_REGIME_RSI_SELL
+        self.strike_adjustment = TradingConfig.VOL_REGIME_STRIKE_ADJUSTMENT
+        self.refresh_from_config()
+
+    def refresh_from_config(self):
+        params = TradingConfig.get_strategy_params(self.name)
+        self.vol_threshold = float(params.get("vol_threshold", TradingConfig.VOLATILITY_TRIGGER))
+        self.rsi_buy = float(params.get("rsi_buy", TradingConfig.VOL_REGIME_RSI_BUY))
+        self.rsi_sell = float(params.get("rsi_sell", TradingConfig.VOL_REGIME_RSI_SELL))
+        self.strike_adjustment = int(params.get("strike_adjustment", TradingConfig.VOL_REGIME_STRIKE_ADJUSTMENT))
 
     def generate_signal(self, market_data: Dict, technical_data: Dict, historical_prices: List[float]) -> Optional[Dict]:
         """Generate signals based on volatility regime changes"""
@@ -515,22 +808,22 @@ class VolatilityRegimeStrategy(TradingStrategy):
         signal = None
 
         # Volatility expansion strategy (loosened barrier)
-        if vol_regime in ('high', 'normal') and current_vol > 0.25:
-            if rsi < 40:  # Oversold in high/normal vol
+        if vol_regime in ('high', 'normal') and current_vol > self.vol_threshold:
+            if rsi < self.rsi_buy:  # Oversold in high/normal vol
                 signal = {
                     'type': 'BUY',
                     'option_type': 'CE',
                     'reason': 'HIGH_VOL_OVERSOLD',
                     'confidence': 75,
-                    'strike_adjustment': 25
+                    'strike_adjustment': self.strike_adjustment
                 }
-            elif rsi > 60:  # Overbought in high/normal vol
+            elif rsi > self.rsi_sell:  # Overbought in high/normal vol
                 signal = {
                     'type': 'BUY',
                     'option_type': 'PE',
                     'reason': 'HIGH_VOL_OVERBOUGHT',
                     'confidence': 75,
-                    'strike_adjustment': 25
+                    'strike_adjustment': self.strike_adjustment
                 }
 
         # Volatility contraction strategy (unchanged but available)
@@ -560,6 +853,86 @@ class VolatilityRegimeStrategy(TradingStrategy):
             self.trades_executed += 1
 
         return signal
+
+class AdaptiveTrendStrategy(TradingStrategy):
+    """Adaptive trend-following options strategy for NIFTY options."""
+
+    def __init__(self):
+        super().__init__("Adaptive Trend")
+        self.short_ema = TradingConfig.ADAPTIVE_SHORT_EMA
+        self.long_ema = TradingConfig.ADAPTIVE_LONG_EMA
+        self.rsi_confirm = TradingConfig.ADAPTIVE_RSI_CONFIRM
+        self.strike_adjustment = TradingConfig.ADAPTIVE_STRIKE_ADJUSTMENT
+        self.vol_floor = TradingConfig.ADAPTIVE_VOL_FLOOR
+        self.refresh_from_config()
+
+    def refresh_from_config(self):
+        params = TradingConfig.get_strategy_params(self.name)
+        self.short_ema = int(params.get("short_ema", TradingConfig.ADAPTIVE_SHORT_EMA))
+        self.long_ema = int(params.get("long_ema", TradingConfig.ADAPTIVE_LONG_EMA))
+        self.rsi_confirm = float(params.get("trend_confirmation_rsi", TradingConfig.ADAPTIVE_RSI_CONFIRM))
+        self.strike_adjustment = int(params.get("strike_adjustment", TradingConfig.ADAPTIVE_STRIKE_ADJUSTMENT))
+        self.vol_floor = float(params.get("volatility_floor", TradingConfig.ADAPTIVE_VOL_FLOOR))
+
+    @staticmethod
+    def _ema(values: List[float], period: int) -> float:
+        series = pd.Series(values)
+        return float(series.ewm(span=period, adjust=False).mean().iloc[-1])
+
+    def generate_signal(self, market_data: Dict, technical_data: Dict, historical_prices: List[float]) -> Optional[Dict]:
+        """Generate signals using dual-EMA trend confirmation with RSI filter."""
+        lookback = max(self.long_ema * 2, 50)
+        if len(historical_prices) < lookback:
+            return None
+
+        prices_window = historical_prices[-lookback:]
+        short_ema = self._ema(prices_window, self.short_ema)
+        long_ema = self._ema(prices_window, self.long_ema)
+
+        rsi = technical_data.get('rsi', 50)
+        vol = technical_data.get('volatility', 0.20)
+
+        if vol < self.vol_floor:
+            return None
+
+        self.signals_generated += 1
+        signal = None
+        trend_diff = long_ema if long_ema else 1e-9
+        slope = (short_ema - long_ema) / trend_diff
+
+        if short_ema > long_ema and rsi >= self.rsi_confirm:
+            confidence = min(100, abs(slope) * 25000)
+            if confidence >= TradingConfig.ENTRY_CONFIDENCE_MIN:
+                signal = {
+                    'type': 'BUY',
+                    'option_type': 'CE',
+                    'reason': 'ADAPTIVE_TREND_UP',
+                    'confidence': confidence,
+                    'strike_adjustment': self.strike_adjustment
+                }
+        elif short_ema < long_ema and rsi <= (100 - self.rsi_confirm):
+            confidence = min(100, abs(slope) * 25000)
+            if confidence >= TradingConfig.ENTRY_CONFIDENCE_MIN:
+                signal = {
+                    'type': 'BUY',
+                    'option_type': 'PE',
+                    'reason': 'ADAPTIVE_TREND_DOWN',
+                    'confidence': confidence,
+                    'strike_adjustment': self.strike_adjustment
+                }
+
+        if signal:
+            self.trades_executed += 1
+
+        return signal
+
+
+STRATEGY_REGISTRY: Dict[str, type] = {
+    "Mean Reversion": MeanReversionStrategy,
+    "Momentum Breakout": MomentumBreakoutStrategy,
+    "Volatility Regime": VolatilityRegimeStrategy,
+    "Adaptive Trend": AdaptiveTrendStrategy,
+}
 
 # -------------------------------------------------
 # Position / P&L container
@@ -929,6 +1302,33 @@ def export_trades_to_csv(db_manager: DatabaseManager, filename: str = None) -> O
     except Exception as e:
         logger.error(f"❌ Error exporting trades: {e}")
         return None
+
+
+def run_enhanced_backtest(symbol: Optional[str] = None,
+                          interval: Optional[str] = None,
+                          lookback_days: Optional[int] = None,
+                          strategies: Optional[List[str]] = None) -> Dict:
+    """Execute the advanced backtester and persist the best strategy selection."""
+    from backtester import Backtester  # Local import to avoid circular dependency
+
+    tester = Backtester(
+        symbol=symbol,
+        interval=interval,
+        lookback_days=lookback_days,
+        strategies=strategies,
+        auto_apply_best=True,
+    )
+    result = tester.run()
+    best = result.get("best_strategy") or {}
+    if best:
+        logger.info(
+            "Backtest complete. Best strategy %s with total P&L ₹%.2f",
+            best.get("name"),
+            best.get("total_pnl", 0.0),
+        )
+    else:
+        logger.warning("Backtest completed but no trades were generated.")
+    return result
 
 # -------------------------------------------------
 # Entrypoint hint
