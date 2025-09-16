@@ -21,7 +21,6 @@ BASE_DIR = Path(__file__).resolve().parent
 # --- Imports & logger fallback ---
 import logging
 logger = None
-logger = None
 try:
     from trading_engine import TradingEngine  # single import, used everywhere
     from algo_trading_main import DatabaseManager, export_trades_to_csv, logger as ext_logger
