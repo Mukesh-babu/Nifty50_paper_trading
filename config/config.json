@@ -1,0 +1,69 @@
+{
+  "trading": {
+    "total_capital": 100000,
+    "risk_per_trade": 0.02,
+    "lot_size": 50,
+    "fees_per_order": 64,
+    "base_sl_pct": 0.03,
+    "base_tp_pct": 0.06,
+    "partial_tp_pct": 0.04,
+    "trail_pct": 0.02,
+    "entry_confidence_min": 40,
+    "max_lots_cap": 10,
+    "max_premium_allocation_pct": 0.10,
+    "fixed_risk_rupees": 500,
+    "target_trigger_rupees": 500,
+    "trail_after_trigger": true,
+    "max_trades_per_day": 5,
+    "max_open_positions": 3,
+    "cooldown_minutes": 30,
+    "market_open": "09:15",
+    "market_close": "15:30",
+    "eod_exit": "15:15",
+    "active_strategies": [
+      "Mean Reversion",
+      "Momentum Breakout",
+      "Volatility Regime"
+    ]
+  },
+  "indicators": {
+    "rsi_period": 14,
+    "rsi_oversold": 30,
+    "rsi_overbought": 70,
+    "bb_period": 20,
+    "bb_std": 2.0,
+    "vol_lookback": 20,
+    "vol_threshold": 1.2
+  },
+  "strategy_params": {
+    "Mean Reversion": {
+      "rsi_oversold": 30,
+      "rsi_overbought": 70,
+      "strike_adjustment": 0
+    },
+    "Momentum Breakout": {
+      "lookback_period": 10,
+      "range_threshold": 0.006,
+      "strike_adjustment": 50
+    },
+    "Volatility Regime": {
+      "vol_threshold": 0.25,
+      "rsi_buy": 40,
+      "rsi_sell": 60,
+      "strike_adjustment": 50
+    },
+    "Adaptive Trend": {
+      "short_ema": 21,
+      "long_ema": 55,
+      "trend_confirmation_rsi": 55,
+      "strike_adjustment": 50,
+      "volatility_floor": 0.18
+    }
+  },
+  "backtest": {
+    "symbol": "^NSEI",
+    "interval": "1m",
+    "lookback_days": 5,
+    "max_lookback_1m": 7
+  }
+}

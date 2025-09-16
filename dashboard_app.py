@@ -2,10 +2,68 @@
 # Web-based dashboard for monitoring algo trading system
 # Version: 1.1
 
+
 from flask import Flask, render_template, jsonify, request, send_file
 from flask_socketio import SocketIO, emit
 import json
 import os
+from pathlib import Path
+from datetime import datetime
+
+from flask import Flask, render_template, jsonify, request, send_file
+from flask_socketio import SocketIO, emit
+import json
+import os
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+import plotly.graph_objs as go
+import plotly.utils
+import time
+import sys
+import threading
+
+
+# --- Paths ---
+BASE_DIR = Path(__file__).resolve().parent
+
+# --- Imports & logger fallback ---
+import logging
+logger = None
+
+BASE_DIR = Path(__file__).resolve().parent
+
+# --- Imports & logger fallback ---
+import logging
+logger = None
+try:
+    from trading_engine import TradingEngine  # single import, used everywhere
+    from algo_trading_main import (
+        DatabaseManager,
+        TradingConfig,
+        export_trades_to_csv,
+        logger as ext_logger,
+        STRATEGY_REGISTRY,
+    )
+    logger = ext_logger
+
+except ImportError as e:
+    print("Error: Please ensure algo_trading_main.py is available:", e)
+
+from flask import Flask, render_template, jsonify, request, send_file
+from flask_socketio import SocketIO, emit
+import json
+import os
+
+from datetime import datetime
+import pandas as pd
+import plotly.graph_objs as go
+import plotly.utils
+import time
+import sys
+import threading
+
 from pathlib import Path
 from datetime import datetime
 import pandas as pd
@@ -15,41 +73,73 @@ import time
 import sys
 import threading
 
+
 # --- Paths ---
 BASE_DIR = Path(__file__).resolve().parent
 
 # --- Imports & logger fallback ---
 import logging
 logger = None
+
 try:
     from trading_engine import TradingEngine  # single import, used everywhere
-    from algo_trading_main import DatabaseManager, export_trades_to_csv, logger as ext_logger
+    from algo_trading_main import (
+        DatabaseManager,
+        TradingConfig,
+        export_trades_to_csv,
+        logger as ext_logger,
+        STRATEGY_REGISTRY,
+    )
     logger = ext_logger
 
 except ImportError as e:
     print("Error: Please ensure algo_trading_main.py is available:", e)
+
     # Fallback logger
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
     logger = logging.getLogger("dashboard_fallback")
 
     # we still attempt to run with a best-effort DB manager
     try:
-        from algo_trading_main import DatabaseManager, export_trades_to_csv
+
+        from algo_trading_main import DatabaseManager, export_trades_to_csv, TradingConfig
+    except Exception as e2:
+        logger.error("Critical: Could not import DatabaseManager/export_trades_to_csv: %s", e2)
+        sys.exit(1)
+
+
+# --- Flask / SocketIO ---
+app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
+
+# --- Flask / SocketIO ---
+app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
+
+        from algo_trading_main import DatabaseManager, export_trades_to_csv, TradingConfig
     except Exception as e2:
         logger.error("Critical: Could not import DatabaseManager/export_trades_to_csv: %s", e2)
         sys.exit(1)
 
 # --- Flask / SocketIO ---
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
+
+
 app.config['SECRET_KEY'] = 'algo_trading_secret_key_2024'
 
 # Force threading backend to avoid eventlet/gevent mismatches unless you explicitly install/configure them.
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 # --- Globals ---
+
 trading_engine = None
 _engine_lock = threading.RLock()
 db_manager = DatabaseManager()
+AVAILABLE_STRATEGIES = list(STRATEGY_REGISTRY.keys()) if 'STRATEGY_REGISTRY' in globals() else []
+
+trading_engine = None
+_engine_lock = threading.RLock()
+db_manager = DatabaseManager()
+AVAILABLE_STRATEGIES = list(STRATEGY_REGISTRY.keys()) if 'STRATEGY_REGISTRY' in globals() else []
+
 
 # ============= Helpers =============
 
@@ -82,16 +172,31 @@ def _get_status_from_db():
     OPTIONAL: If you persist status snapshots in your DB, fetch the latest here.
     If you don't, consider deriving from recent trades P&L as a weaker fallback.
     """
+
     status = {
         'is_running': False,
-        'current_capital': 100000,
+        'current_capital': TradingConfig.TOTAL_CAPITAL,
         'total_pnl': 0,
         'total_trades': 0,
         'winning_trades': 0,
         'win_rate': 0.0,
         'open_positions': 0,
-        'current_price': 0
+        'current_price': 0,
+        'active_strategies': TradingConfig.ACTIVE_STRATEGIES,
     }
+
+    status = {
+        'is_running': False,
+        'current_capital': TradingConfig.TOTAL_CAPITAL,
+        'total_pnl': 0,
+        'total_trades': 0,
+        'winning_trades': 0,
+        'win_rate': 0.0,
+        'open_positions': 0,
+        'current_price': 0,
+        'active_strategies': TradingConfig.ACTIVE_STRATEGIES,
+    }
+
     try:
         trades_df = db_manager.get_recent_trades(limit=1000)
         if trades_df is not None and not trades_df.empty:
@@ -222,10 +327,28 @@ def create_hourly_performance_chart():
 @app.route('/')
 def dashboard():
     """Main dashboard page"""
+
     template_path = BASE_DIR / "templates" / "dashboard.html"
     if not template_path.exists():
         template_path.parent.mkdir(parents=True, exist_ok=True)
         with template_path.open('w', encoding='utf-8') as f:
+
+
+    template_path = BASE_DIR / 'templates' / 'dashboard.html'
+    if not template_path.exists():
+        template_path.parent.mkdir(parents=True, exist_ok=True)
+        template_path.write_text(get_dashboard_html(), encoding='utf-8')
+    try:
+        return render_template('dashboard.html')
+    except Exception as e:
+        logger.warning("Template render failed, falling back to inline HTML: %s", e)
+        return get_dashboard_html()
+
+    template_path = BASE_DIR / "templates" / "dashboard.html"
+    if not template_path.exists():
+        template_path.parent.mkdir(parents=True, exist_ok=True)
+        with template_path.open('w', encoding='utf-8') as f:
+
             f.write(get_dashboard_html())
     try:
         return render_template('dashboard.html')
@@ -258,12 +381,25 @@ setInterval(function(){
 def get_status():
     """Get current system status"""
     # 1) Try engine (in-process)
+
     status = _get_live_status_from_engine()
     # 2) Fallback to DB if engine not in-process
     if status is None:
         status = _get_status_from_db()
         status['error'] = 'Trading engine not connected to this process'
+    status.setdefault('active_strategies', TradingConfig.ACTIVE_STRATEGIES)
+    status['available_strategies'] = AVAILABLE_STRATEGIES
     return jsonify(status)
+
+    status = _get_live_status_from_engine()
+    # 2) Fallback to DB if engine not in-process
+    if status is None:
+        status = _get_status_from_db()
+        status['error'] = 'Trading engine not connected to this process'
+    status.setdefault('active_strategies', TradingConfig.ACTIVE_STRATEGIES)
+    status['available_strategies'] = AVAILABLE_STRATEGIES
+    return jsonify(status)
+
 
 @app.route('/api/trades')
 def get_trades():
@@ -345,22 +481,161 @@ def get_strategies():
         return jsonify({'strategies': strategies_list})
 
     except Exception as e:
+
         logger.error("Error getting strategy data: %s", e)
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/config', methods=['GET', 'POST'])
+def api_config():
+    """Expose and update trading configuration."""
+    if request.method == 'GET':
+        return jsonify({
+            'config': TradingConfig.to_dashboard(),
+            'available_strategies': AVAILABLE_STRATEGIES,
+        })
+
+    payload = request.get_json(force=True, silent=True) or {}
+    updates = {}
+    try:
+        if isinstance(payload.get('trading'), dict):
+            updates['trading'] = payload['trading']
+        if isinstance(payload.get('strategy_params'), dict):
+            updates['strategy_params'] = payload['strategy_params']
+        if isinstance(payload.get('backtest'), dict):
+            updates['backtest'] = payload['backtest']
+        active = payload.get('active_strategies')
+        if active is not None:
+            updates.setdefault('trading', {})['active_strategies'] = active
+
+        if not updates:
+            return jsonify({
+                'status': 'no_changes',
+                'config': TradingConfig.to_dashboard()
+            })
+
+        config = TradingConfig.update_config(updates)
+        if trading_engine and getattr(trading_engine, 'is_running', False):
+            trading_engine.refresh_config()
+        return jsonify({'status': 'success', 'config': config})
+    except Exception as e:
+        logger.error("Config update failed: %s", e)
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/api/export')
 def export_trades():
     """Export trades to CSV"""
     try:
         filename = export_trades_to_csv(db_manager)
+
+        logger.error("Error getting strategy data: %s", e)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/config', methods=['GET', 'POST'])
+def api_config():
+    """Expose and update trading configuration."""
+    if request.method == 'GET':
+        return jsonify({
+            'config': TradingConfig.to_dashboard(),
+            'available_strategies': AVAILABLE_STRATEGIES,
+        })
+
+    payload = request.get_json(force=True, silent=True) or {}
+    updates = {}
+    try:
+        if isinstance(payload.get('trading'), dict):
+            updates['trading'] = payload['trading']
+        if isinstance(payload.get('strategy_params'), dict):
+            updates['strategy_params'] = payload['strategy_params']
+        if isinstance(payload.get('backtest'), dict):
+            updates['backtest'] = payload['backtest']
+        active = payload.get('active_strategies')
+        if active is not None:
+            updates.setdefault('trading', {})['active_strategies'] = active
+
+        if not updates:
+            return jsonify({
+                'status': 'no_changes',
+                'config': TradingConfig.to_dashboard()
+            })
+
+        config = TradingConfig.update_config(updates)
+        if trading_engine and getattr(trading_engine, 'is_running', False):
+            trading_engine.refresh_config()
+        return jsonify({'status': 'success', 'config': config})
+    except Exception as e:
+        logger.error("Config update failed: %s", e)
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/export')
+def export_trades():
+    """Export trades to CSV"""
+    try:
+        filename = export_trades_to_csv(db_manager)
+
         if filename and os.path.exists(filename):
             return send_file(filename, as_attachment=True, download_name=os.path.basename(filename))
         else:
             return jsonify({'error': 'No trades to export or file creation failed'}), 404
 
     except Exception as e:
+
         logger.error("Error exporting trades: %s", e)
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backtest', methods=['POST'])
+def run_backtest_api():
+    """Run historical backtest and optionally apply winning strategy."""
+    payload = request.get_json(force=True, silent=True) or {}
+    auto_apply = payload.get('auto_apply_best', True)
+    try:
+        from backtester import Backtester  # Local import to prevent circular on startup
+
+        tester = Backtester(
+            symbol=payload.get('symbol'),
+            interval=payload.get('interval'),
+            lookback_days=payload.get('lookback_days'),
+            strategies=payload.get('strategies'),
+            auto_apply_best=auto_apply,
+        )
+        result = tester.run()
+        if auto_apply and trading_engine and getattr(trading_engine, 'is_running', False):
+            trading_engine.refresh_config()
+        return jsonify({'status': 'success', 'result': result})
+    except Exception as e:
+        logger.error("Backtest failed: %s", e)
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+        logger.error("Error exporting trades: %s", e)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backtest', methods=['POST'])
+def run_backtest_api():
+    """Run historical backtest and optionally apply winning strategy."""
+    payload = request.get_json(force=True, silent=True) or {}
+    auto_apply = payload.get('auto_apply_best', True)
+    try:
+        from backtester import Backtester  # Local import to prevent circular on startup
+
+        tester = Backtester(
+            symbol=payload.get('symbol'),
+            interval=payload.get('interval'),
+            lookback_days=payload.get('lookback_days'),
+            strategies=payload.get('strategies'),
+            auto_apply_best=auto_apply,
+        )
+        result = tester.run()
+        if auto_apply and trading_engine and getattr(trading_engine, 'is_running', False):
+            trading_engine.refresh_config()
+        return jsonify({'status': 'success', 'result': result})
+    except Exception as e:
+        logger.error("Backtest failed: %s", e)
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 
 @app.route('/api/control/<action>')
 def control_system(action):
@@ -445,8 +720,7 @@ def ensure_background_task():
         ensure_background_task._started = True
         logger.info("Dashboard update background task started")
 
-# ============= Main =============
-
+# ============= 
 if __name__ == '__main__':
     ensure_background_task()
     logger.info("🌐 Starting Trading Dashboard on http://localhost:5000")
